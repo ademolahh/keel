@@ -101,6 +101,7 @@ func (r *Raft) StartElection() {
 	id := r.id
 
 	r.votedFor = &id
+	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 	votes := 1
 
 	peers := append([]peer(nil), r.peers...)
