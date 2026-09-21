@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"net"
 	"sync"
@@ -170,6 +169,92 @@ func TestRequestVote(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestStartElection(t *testing.T) {
+	t.Run("becomes leader", func(t *testing.T) {
+		nodes, _ := cluster(t, 5)
+		raft := nodes[1].raft
+
+		_, currentTerm, _ := snapshot(raft)
+
+		raft.StartElection()
+
+		if state := waitForState(t, raft, Leader); state != Leader {
+			t.Errorf("state: expected Leader, got %s", raft.state.String())
+		}
+
+		_, term, votedFor := snapshot(raft)
+
+		if currentTerm+1 != term {
+			t.Errorf("term: expected %d, got %d ", currentTerm+1, raft.currentTerm)
+		}
+
+		if votedFor == nil || *votedFor != raft.id {
+			t.Errorf("voted for: expected %d, got %v", raft.id, votedFor)
+		}
+	})
+
+	t.Run("candidate is term stale", func(t *testing.T) {
+		nodes, _ := cluster(t, 5)
+		var candidateId uint64 = 1
+		raft := nodes[candidateId].raft
+
+		raft.currentTerm = 2
+
+		var actualCurrentTerm uint64 = 5
+
+		for id, node := range nodes {
+			if id == candidateId {
+				continue
+			}
+
+			node.raft.currentTerm = actualCurrentTerm
+		}
+
+		raft.StartElection()
+
+		if state := waitForState(t, raft, Follower); state != Follower {
+			t.Errorf("state: expected Follower, got %s", raft.state.String())
+		}
+
+		_, term, _ := snapshot(raft)
+
+		if actualCurrentTerm != term {
+			t.Errorf("term: expected %d, got %d ", actualCurrentTerm, term)
+		}
+	})
+
+	t.Run("count crashed peers as no vote", func(t *testing.T) {
+		nodes, _ := cluster(t, 5)
+		nodes[3].stop()
+		nodes[4].stop()
+
+		var candidateId uint64 = 1
+		raft := nodes[candidateId].raft
+
+		raft.StartElection()
+
+		if state := waitForState(t, raft, Leader); state != Leader {
+			t.Errorf("state: expected Leader, got %s", raft.state.String())
+		}
+	})
+
+	t.Run("remains candidate when majority is down", func(t *testing.T) {
+		nodes, _ := cluster(t, 5)
+		nodes[3].stop()
+		nodes[4].stop()
+		nodes[5].stop()
+
+		var candidateId uint64 = 1
+		raft := nodes[candidateId].raft
+
+		raft.StartElection()
+
+		if state := waitForState(t, raft, Candidate); state != Candidate {
+			t.Errorf("state: expected Candidate, got %s", raft.state.String())
+		}
+	})
 
 }
 
@@ -184,14 +269,14 @@ func TestRandomElectionTimeout(t *testing.T) {
 func makePeer(n int) map[uint64]string {
 	peers := make(map[uint64]string, n)
 	for i := range n {
-		peers[uint64(i+1)] = fmt.Sprintf("localhost:%v", 50000+i+1)
+		peers[uint64(i+1)] = "localhost:0"
 	}
 
 	return peers
 }
 
 func uint64Ptr(v uint64) *uint64 {
-	return &v
+	return new(v)
 }
 
 func newTestRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
@@ -210,32 +295,79 @@ func newTestRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
 	return raft, peers
 }
 
-func run(peers map[uint64]string) {
-	var wg sync.WaitGroup
-	wg.Add(len(peers))
+func cluster(t *testing.T, n int) (map[uint64]*node, map[uint64]string) {
+	t.Helper()
 
-	for id, addr := range peers {
-		go func() {
-			fmt.Println("id", id)
-			defer wg.Done()
-			raft := New(id, peers)
-			start(raft, addr)
-		}()
+	peers := make(map[uint64]string, n)
+
+	nodes := make(map[uint64]*node)
+
+	listeners := make(map[uint64]net.Listener, n)
+
+	for i := 1; i <= n; i++ {
+		lst, err := net.Listen("tcp", "localhost:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+
+		id := uint64(i)
+
+		listeners[id] = lst
+		peers[id] = lst.Addr().String()
 	}
 
-	wg.Wait()
+	for id, lst := range listeners {
+		r := New(id, peers)
+		s := start(t, r, lst)
+
+		nodes[id] = &node{raft: r, stop: s}
+	}
+
+	return nodes, peers
 }
 
-func start(raft *Raft, addr string) {
-	lis, err := net.Listen("tcp", addr)
-	if err != nil {
-		return
-	}
+func start(t *testing.T, raft *Raft, lis net.Listener, opt ...grpc.ServerOption) func() {
+	t.Helper()
 
-	server := grpc.NewServer()
+	server := grpc.NewServer(opt...)
 	proto.RegisterRaftServer(server, raft)
 
-	if err := server.Serve(lis); err == nil {
-		log.Printf("node %d serve: %v", raft.id, err)
+	var once sync.Once
+	stop := func() { once.Do(server.Stop) }
+	t.Cleanup(stop)
+
+	go func() {
+		if err := server.Serve(lis); err != nil {
+			log.Printf("node %d serve: %v", raft.id, err)
+		}
+	}()
+
+	return stop
+}
+
+func snapshot(r *Raft) (RaftState, uint64, *uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.state, r.currentTerm, r.votedFor
+}
+
+func waitForState(t *testing.T, r *Raft, want RaftState) RaftState {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, _, _ := snapshot(r)
+		if state == want || time.Now().After(deadline) {
+			return state
+		}
+
+		time.Sleep(5 * time.Millisecond)
 	}
+
+}
+
+type node struct {
+	raft *Raft
+	stop func()
 }
