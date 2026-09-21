@@ -121,7 +121,10 @@ func (r *Raft) StartElection() {
 		}
 
 		go func(client proto.RaftClient) {
-			res, err := client.RequestVote(context.Background(), req)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			res, err := client.RequestVote(ctx, req)
 			if err != nil {
 				return
 			}
