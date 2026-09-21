@@ -11,6 +11,28 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
+type RaftState int
+
+const (
+	_ RaftState = iota
+	Leader
+	Follower
+	Candidate
+)
+
+func (s RaftState) String() string {
+	switch s {
+	case Leader:
+		return "Leader"
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	default:
+		return "Unknown"
+	}
+}
+
 type Raft struct {
 	mu          sync.Mutex
 	currentTerm uint64
