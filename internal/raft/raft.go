@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -46,6 +47,9 @@ type Raft struct {
 	electionDeadline time.Time
 	voteTimeout      time.Duration
 
+	killOnce sync.Once
+	done     chan struct{}
+
 	proto.UnimplementedRaftServer
 }
 
@@ -77,21 +81,33 @@ func New(id uint64, peerClient map[uint64]string) *Raft {
 		peers:            peers,
 		state:            Follower,
 		voteTimeout:      5 * time.Second,
+		done:             make(chan struct{}),
 		electionDeadline: time.Now().Add(randomElectionTimeout())}
 }
 
-func (r *Raft) CheckElection() {
-	for {
+func (r *Raft) Kill() {
+	r.killOnce.Do(func() { close(r.done) })
+}
+
+func (r *Raft) RunElectionTimer() {
+	ticker := time.NewTicker(10 * time.Millisecond)
+
+	for range ticker.C {
+		select {
+		case <-r.done:
+			return
+		case <-ticker.C:
+		}
+
 		r.mu.Lock()
-		timemout := r.electionDeadline
-		state := r.state
+		deadline := r.electionDeadline
+		isLeader := r.state == Leader
 		r.mu.Unlock()
 
-		if time.Since(timemout) > 0 && state != Leader {
+		if time.Since(deadline) > 0 && !isLeader {
 			r.StartElection()
 		}
 
-		time.Sleep(10 * time.Millisecond)
 	}
 }
 
@@ -185,6 +201,41 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 	yes := &proto.RequestVoteResponse{VoteGranted: true, Term: r.currentTerm}
 
 	return yes, nil
+}
+
+func (r *Raft) Append() {
+	r.mu.Lock()
+	isLeader := r.state == Leader
+	peers := append([]peer(nil), r.peers...)
+	r.mu.Unlock()
+
+	if !isLeader {
+		fmt.Println("restricted: Leader calls only")
+		return
+	}
+
+	for _, peer := range peers {
+		go func(client proto.RaftClient) {
+			ctx, cancel := context.WithTimeout(context.Background(), r.voteTimeout)
+			defer cancel()
+
+			req := &proto.AppendEntriesRequest{}
+
+			_, err := r.AppendEntries(ctx, req)
+			if err != nil {
+				return
+			}
+
+		}(peer.client)
+	}
+
+}
+
+func (r *Raft) AppendEntries(ctx context.Context,
+	req *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {
+
+	r.electionDeadline = time.Now().Add(randomElectionTimeout())
+	return &proto.AppendEntriesResponse{}, nil
 }
 
 func (r *Raft) GetState() (string, uint64) {
