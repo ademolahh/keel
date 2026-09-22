@@ -264,7 +264,6 @@ func TestStartElection(t *testing.T) {
 
 		nodes, _ := cluster(t, 5, delay)
 		raft := nodes[1].raft
-		raft.voteTimeout = 2 * time.Second
 
 		raft.StartElection()
 
@@ -313,6 +312,23 @@ func TestStartElection(t *testing.T) {
 	})
 }
 
+func TestRunElectionTimer(t *testing.T) {
+	nodes, _ := cluster(t, 5, nil)
+
+	t.Cleanup(func() {
+		for _, node := range nodes {
+			node.raft.Kill()
+		}
+	})
+
+	for _, node := range nodes {
+		go node.raft.RunElectionTimer()
+	}
+
+	// keep checking call until all are done
+	// else timeout at somepoint
+}
+
 func TestRandomElectionTimeout(t *testing.T) {
 	randomTime := randomElectionTimeout()
 	if randomTime > 300*time.Millisecond || randomTime < 100*time.Millisecond {
@@ -322,7 +338,6 @@ func TestRandomElectionTimeout(t *testing.T) {
 }
 
 // HELPERS
-
 func uint64Ptr(v uint64) *uint64 {
 	return new(v)
 }
