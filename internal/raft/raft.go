@@ -44,6 +44,7 @@ type Raft struct {
 	peers []peer
 
 	electionDeadline time.Time
+	voteTimeout      time.Duration
 
 	proto.UnimplementedRaftServer
 }
@@ -75,6 +76,7 @@ func New(id uint64, peerClient map[uint64]string) *Raft {
 		id:               id,
 		peers:            peers,
 		state:            Follower,
+		voteTimeout:      5 * time.Second,
 		electionDeadline: time.Now().Add(randomElectionTimeout())}
 }
 
@@ -121,7 +123,7 @@ func (r *Raft) StartElection() {
 		}
 
 		go func(client proto.RaftClient) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(context.Background(), r.voteTimeout)
 			defer cancel()
 
 			res, err := client.RequestVote(ctx, req)
@@ -150,7 +152,6 @@ func (r *Raft) StartElection() {
 				}
 			}
 		}(v.client)
-
 	}
 
 }
