@@ -1,5 +1,7 @@
 syntax = "proto3";
 
+// import "google/protobuf/any.proto";
+
 option go_package = "github.com/ademolahh/raftkv/proto";
 
 service Raft {
@@ -17,9 +19,24 @@ message RequestVoteRequest {
 
 message RequestVoteResponse {
   uint64 term         = 1;
-  bool  vote_granted = 2;
+  bool   vote_granted = 2;
 }
 
-message AppendEntriesRequest {}
+message AppendEntriesRequest {
+  uint64            term           = 1;
+  uint64            leader_id      = 2;
+  uint64            prev_log_index = 3;
+  uint64            prev_log_term  = 4;
+  repeated LogEntry entries        = 5;
+  uint64            leaderCommit   = 6;
+}
 
-message AppendEntriesResponse {}
+message AppendEntriesResponse {
+  uint64 term    = 1;
+  bool   success = 2;
+}
+
+message LogEntry {
+  uint64 term = 1;
+  string cmd  = 2;
+}
