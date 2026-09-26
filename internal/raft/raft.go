@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	"fmt"
 	"math/rand"
 	"sync"
 	"time"
@@ -41,8 +40,9 @@ type Raft struct {
 	id          uint64
 
 	state RaftState
-
 	peers []peer
+
+	logs []*proto.LogEntry
 
 	electionDeadline time.Time
 	voteTimeout      time.Duration
@@ -80,6 +80,7 @@ func New(id uint64, peerClient map[uint64]string) *Raft {
 		id:               id,
 		peers:            peers,
 		state:            Follower,
+		logs:             []*proto.LogEntry{},
 		voteTimeout:      5 * time.Second,
 		done:             make(chan struct{}),
 		electionDeadline: time.Now().Add(randomElectionTimeout())}
@@ -164,6 +165,9 @@ func (r *Raft) StartElection() {
 				votes += 1
 				if votes >= majority {
 					r.state = Leader
+					// initialize next index to next index after the last log
+					//
+					// r.emptyAppend()
 					return
 				}
 			}
@@ -176,10 +180,10 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	no := &proto.RequestVoteResponse{VoteGranted: false, Term: r.currentTerm}
-
 	if r.currentTerm > req.Term {
-		return no, nil
+		return &proto.RequestVoteResponse{
+			VoteGranted: false,
+			Term:        r.currentTerm}, nil
 	}
 
 	// candidate has the higher term
@@ -189,59 +193,93 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 		r.state = Follower
 	}
 
+	lastLogIndex := len(r.logs)
+
+	if lastLogIndex != 0 {
+		// if terms are not the same, the one with higher term is the latest
+		if r.logs[lastLogIndex-1].Term > req.LastLogTerm {
+			return &proto.RequestVoteResponse{
+				VoteGranted: false,
+				Term:        r.currentTerm,
+			}, nil
+		}
+
+		// if terms are the same, the one with higher index is latest
+		if req.LastLogTerm == r.logs[lastLogIndex-1].Term && lastLogIndex > int(req.LastLogIndex) {
+			return &proto.RequestVoteResponse{
+				VoteGranted: false,
+				Term:        r.currentTerm,
+			}, nil
+		}
+	}
+
 	// at this point, the terms are equal
 	// only one candidate per term
 	if r.votedFor != nil && *r.votedFor != req.CandidateId {
-		return no, nil
+		return &proto.RequestVoteResponse{
+			VoteGranted: false,
+			Term:        r.currentTerm}, nil
 	}
 
 	r.votedFor = &req.CandidateId
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 
-	yes := &proto.RequestVoteResponse{VoteGranted: true, Term: r.currentTerm}
-
-	return yes, nil
-}
-
-func (r *Raft) Append() {
-	r.mu.Lock()
-	isLeader := r.state == Leader
-	peers := append([]peer(nil), r.peers...)
-	r.mu.Unlock()
-
-	if !isLeader {
-		fmt.Println("restricted: Leader calls only")
-		return
-	}
-
-	for _, peer := range peers {
-		go func(client proto.RaftClient) {
-			ctx, cancel := context.WithTimeout(context.Background(), r.voteTimeout)
-			defer cancel()
-
-			req := &proto.AppendEntriesRequest{}
-
-			_, err := r.AppendEntries(ctx, req)
-			if err != nil {
-				return
-			}
-
-		}(peer.client)
-	}
-
+	return &proto.RequestVoteResponse{
+		VoteGranted: true,
+		Term:        r.currentTerm}, nil
 }
 
 func (r *Raft) AppendEntries(ctx context.Context,
 	req *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {
-
-	r.electionDeadline = time.Now().Add(randomElectionTimeout())
-	return &proto.AppendEntriesResponse{}, nil
-}
-
-func (r *Raft) GetState() (string, uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.state.String(), r.currentTerm
+
+	no := &proto.AppendEntriesResponse{Term: r.currentTerm, Success: false}
+
+	if req.Term < r.currentTerm {
+		return no, nil
+	}
+
+	followerLogIndex := len(r.logs)
+	if req.PrevLogIndex != 0 {
+		if int(req.PrevLogIndex) > followerLogIndex {
+
+			// custom the error such that the leader retries with a lesser index
+			// until they match
+			return no, nil
+		}
+
+		// contains, but the log doesn't match
+		if r.logs[req.PrevLogIndex-1].Term != req.PrevLogTerm {
+			return no, nil
+		}
+	}
+
+	newIndex := int(req.PrevLogIndex) + 1
+
+	if len(req.Entries) > 0 && followerLogIndex >= newIndex {
+		nextEntry := r.logs[newIndex-1]
+
+		if nextEntry.Term != req.Entries[0].Term {
+			r.logs = r.logs[:newIndex-1]
+		}
+	}
+
+	if req.Term > r.currentTerm {
+		r.currentTerm = req.Term
+		r.state = Follower
+	}
+
+	// if log and term is the same, then all entry store the same command
+	// if log and term is the same, the logs are identical in all preceeding entries
+
+	// replicated it
+	if len(req.Entries) > 0 {
+		r.logs = append(r.logs[:newIndex-1], req.Entries...)
+	}
+
+	r.electionDeadline = time.Now().Add(randomElectionTimeout())
+	return &proto.AppendEntriesResponse{Term: r.currentTerm, Success: true}, nil
 }
 
 func randomElectionTimeout() time.Duration {
