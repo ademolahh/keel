@@ -2,7 +2,7 @@ package raft
 
 import (
 	"context"
-	"log"
+	"fmt"
 	"net"
 	"sync"
 	"testing"
@@ -13,8 +13,7 @@ import (
 )
 
 func TestNew(t *testing.T) {
-	nodes, peers := cluster(t, 5, nil)
-	raft := nodes[1].raft
+	raft, peers := newRaft(t, 1, 5)
 	currTime := time.Now()
 
 	if raft.id != 1 {
@@ -40,143 +39,263 @@ func TestNew(t *testing.T) {
 }
 
 func TestGetState(t *testing.T) {
-	nodes, _ := cluster(t, 5, nil)
-	raft := nodes[1].raft
+	raft, _ := newRaft(t, 1, 5)
 	if raft.state != Follower {
 		t.Errorf("state: expected Follower, got: %s", raft.state.String())
 	}
 }
 
 func TestRequestVote(t *testing.T) {
-	tests := []struct {
-		name        string
-		currentTerm uint64
-		votedFor    *uint64
-		state       RaftState
-		request     *proto.RequestVoteRequest
+	t.Run("rejects a candidate whose term is behind", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
 
-		wantGranted  bool
-		wantTerm     uint64
-		wantVotedFor *uint64
-		wantState    RaftState
-		wantDeadline bool
-	}{
-		{
-			name:        "candidate is stale",
-			currentTerm: 5,
-			state:       Follower,
-			request:     &proto.RequestVoteRequest{Term: 4, CandidateId: 2},
+		raft.currentTerm = 5
+		raft.state = Follower
 
-			wantGranted:  false,
-			wantTerm:     5,
-			wantVotedFor: nil,
-			wantState:    Follower,
-			wantDeadline: false,
-		},
-		{
-			name:        "candidate has a higher term",
-			currentTerm: 5,
-			votedFor:    uint64Ptr(1),
-			state:       Candidate,
-			request:     &proto.RequestVoteRequest{Term: 6, CandidateId: 2},
+		deadline := raft.electionDeadline
 
-			wantGranted:  true,
-			wantTerm:     6,
-			wantVotedFor: uint64Ptr(2),
-			wantState:    Follower,
-			wantDeadline: true,
-		},
-		{
-			name:        "first vote of the current term",
-			currentTerm: 5,
-			state:       Follower,
-			request:     &proto.RequestVoteRequest{Term: 5, CandidateId: 2},
+		resp, err := raft.RequestVote(context.Background(),
+			&proto.RequestVoteRequest{Term: 4, CandidateId: 2})
 
-			wantGranted:  true,
-			wantTerm:     5,
-			wantVotedFor: uint64Ptr(2),
-			wantState:    Follower,
-			wantDeadline: true,
-		},
-		{
-			name:        "already voted for another candidate",
-			currentTerm: 5,
-			votedFor:    uint64Ptr(3),
-			state:       Follower,
-			request:     &proto.RequestVoteRequest{Term: 5, CandidateId: 2},
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-			wantGranted:  false,
-			wantTerm:     5,
-			wantVotedFor: uint64Ptr(3),
-			wantState:    Follower,
-			wantDeadline: false,
-		},
-		{
-			name:        "same candidate asks twice in the same term",
-			currentTerm: 5,
-			votedFor:    uint64Ptr(2),
-			state:       Follower,
-			request:     &proto.RequestVoteRequest{Term: 5, CandidateId: 2},
+		if resp.VoteGranted {
+			t.Errorf("vote granted: expected false, got true")
+		}
 
-			wantGranted:  true,
-			wantTerm:     5,
-			wantVotedFor: uint64Ptr(2),
-			wantState:    Follower,
-			wantDeadline: true,
-		},
-	}
+		if resp.Term != 5 {
+			t.Errorf("response term: expected 5, got %d", resp.Term)
+		}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			nodes, _ := cluster(t, 5, nil)
-			raft := nodes[1].raft
+		if raft.currentTerm != 5 {
+			t.Errorf("current term: expected 5, got %d", raft.currentTerm)
+		}
 
-			raft.currentTerm = tc.currentTerm
-			raft.votedFor = tc.votedFor
-			raft.state = tc.state
+		if raft.votedFor != nil {
+			t.Errorf("voted for: expected nil, got %d", *raft.votedFor)
+		}
 
-			deadline := raft.electionDeadline
+		if raft.state != Follower {
+			t.Errorf("state: expected %s, got %s", Follower.String(), raft.state.String())
+		}
 
-			resp, err := raft.RequestVote(context.Background(), tc.request)
+		if reset := !raft.electionDeadline.Equal(deadline); reset {
+			t.Errorf("election deadline reset: expected false, got true")
+		}
+	})
 
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
+	t.Run("adopts a higher term and grants the vote", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
 
-			if resp.VoteGranted != tc.wantGranted {
-				t.Errorf("vote granted: expected %t, got %t", tc.wantGranted, resp.VoteGranted)
-			}
+		raft.currentTerm = 5
+		raft.votedFor = uint64Ptr(1)
+		raft.state = Candidate
 
-			if resp.Term != tc.wantTerm {
-				t.Errorf("response term: expected %d, got %d", tc.wantTerm, resp.Term)
-			}
+		deadline := raft.electionDeadline
 
-			if raft.currentTerm != tc.wantTerm {
-				t.Errorf("current term: expected %d, got %d", tc.wantTerm, raft.currentTerm)
-			}
+		resp, err := raft.RequestVote(context.Background(),
+			&proto.RequestVoteRequest{Term: 6, CandidateId: 2})
 
-			switch {
-			case tc.wantVotedFor == nil && raft.votedFor != nil:
-				t.Errorf("voted for: expected nil, got %d", *raft.votedFor)
-			case tc.wantVotedFor != nil && raft.votedFor == nil:
-				t.Errorf("voted for: expected %d, got nil", *tc.wantVotedFor)
-			case tc.wantVotedFor != nil && *raft.votedFor != *tc.wantVotedFor:
-				t.Errorf("voted for: expected %d, got %d", *tc.wantVotedFor, *raft.votedFor)
-			}
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 
-			if raft.state != tc.wantState {
-				t.Errorf("state: expected %s, got %s", tc.wantState.String(), raft.state.String())
-			}
+		if !resp.VoteGranted {
+			t.Errorf("vote granted: expected true, got false")
+		}
 
-			if reset := !raft.electionDeadline.Equal(deadline); reset != tc.wantDeadline {
-				t.Errorf("election deadline reset: expected %t, got %t", tc.wantDeadline, reset)
-			}
-		})
-	}
+		if resp.Term != 6 {
+			t.Errorf("response term: expected 6, got %d", resp.Term)
+		}
+
+		if raft.currentTerm != 6 {
+			t.Errorf("current term: expected 6, got %d", raft.currentTerm)
+		}
+
+		if raft.votedFor == nil || *raft.votedFor != 2 {
+			t.Errorf("voted for: expected 2, got %v", raft.votedFor)
+		}
+
+		if raft.state != Follower {
+			t.Errorf("state: expected %s, got %s", Follower.String(), raft.state.String())
+		}
+
+		if reset := !raft.electionDeadline.Equal(deadline); !reset {
+			t.Errorf("election deadline reset: expected true, got false")
+		}
+	})
+
+	t.Run("grants the first vote of a term", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
+
+		raft.currentTerm = 5
+		raft.state = Follower
+
+		deadline := raft.electionDeadline
+
+		resp, err := raft.RequestVote(context.Background(),
+			&proto.RequestVoteRequest{Term: 5, CandidateId: 2})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !resp.VoteGranted {
+			t.Errorf("vote granted: expected true, got false")
+		}
+
+		if resp.Term != 5 {
+			t.Errorf("response term: expected 5, got %d", resp.Term)
+		}
+
+		if raft.currentTerm != 5 {
+			t.Errorf("current term: expected 5, got %d", raft.currentTerm)
+		}
+
+		if raft.votedFor == nil || *raft.votedFor != 2 {
+			t.Errorf("voted for: expected 2, got %v", raft.votedFor)
+		}
+
+		if raft.state != Follower {
+			t.Errorf("state: expected %s, got %s", Follower.String(), raft.state.String())
+		}
+
+		if reset := !raft.electionDeadline.Equal(deadline); !reset {
+			t.Errorf("election deadline reset: expected true, got false")
+		}
+	})
+
+	t.Run("rejects a second candidate in the same term", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
+
+		raft.currentTerm = 5
+		raft.votedFor = uint64Ptr(3)
+		raft.state = Follower
+
+		deadline := raft.electionDeadline
+
+		resp, err := raft.RequestVote(context.Background(),
+			&proto.RequestVoteRequest{Term: 5, CandidateId: 2})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if resp.VoteGranted {
+			t.Errorf("vote granted: expected false, got true")
+		}
+
+		if resp.Term != 5 {
+			t.Errorf("response term: expected 5, got %d", resp.Term)
+		}
+
+		if raft.currentTerm != 5 {
+			t.Errorf("current term: expected 5, got %d", raft.currentTerm)
+		}
+
+		if raft.votedFor == nil || *raft.votedFor != 3 {
+			t.Errorf("voted for: expected 3, got %v", raft.votedFor)
+		}
+
+		if raft.state != Follower {
+			t.Errorf("state: expected %s, got %s", Follower.String(), raft.state.String())
+		}
+
+		if reset := !raft.electionDeadline.Equal(deadline); reset {
+			t.Errorf("election deadline reset: expected false, got true")
+		}
+	})
+
+	t.Run("grants a repeat request from the same candidate", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
+
+		raft.currentTerm = 5
+		raft.votedFor = uint64Ptr(2)
+		raft.state = Follower
+
+		deadline := raft.electionDeadline
+
+		resp, err := raft.RequestVote(context.Background(),
+			&proto.RequestVoteRequest{Term: 5, CandidateId: 2})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !resp.VoteGranted {
+			t.Errorf("vote granted: expected true, got false")
+		}
+
+		if resp.Term != 5 {
+			t.Errorf("response term: expected 5, got %d", resp.Term)
+		}
+
+		if raft.currentTerm != 5 {
+			t.Errorf("current term: expected 5, got %d", raft.currentTerm)
+		}
+
+		if raft.votedFor == nil || *raft.votedFor != 2 {
+			t.Errorf("voted for: expected 2, got %v", raft.votedFor)
+		}
+
+		if raft.state != Follower {
+			t.Errorf("state: expected %s, got %s", Follower.String(), raft.state.String())
+		}
+
+		if reset := !raft.electionDeadline.Equal(deadline); !reset {
+			t.Errorf("election deadline reset: expected true, got false")
+		}
+	})
+
+	t.Run("rejects a longer log whose last term is behind", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
+
+		raft.logs = append(raft.logs, makeLogs()...)
+		raft.currentTerm = 3
+
+		req := &proto.RequestVoteRequest{Term: 3, LastLogIndex: uint64(len(raft.logs)) + 1}
+		res, err := raft.RequestVote(context.Background(), req)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if res.VoteGranted {
+			t.Errorf("expected no vote, but go a vote")
+		}
+
+		if res.Term != raft.currentTerm {
+			t.Errorf("term: expected %d, got %d", raft.currentTerm, res.Term)
+		}
+	})
+
+	t.Run("rejects a candidate whose last log term is behind", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 1)
+
+		var actualTerm uint64 = 3
+
+		raft.logs = append(raft.logs, makeLogs()...)
+		raft.currentTerm = actualTerm
+
+		req := &proto.RequestVoteRequest{Term: actualTerm,
+			LastLogTerm: actualTerm - 1, LastLogIndex: uint64(len(raft.logs)) - 1}
+
+		res, err := raft.RequestVote(context.Background(), req)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if res.VoteGranted {
+			t.Errorf("expected no vote, but go a vote")
+		}
+
+	})
+
 }
 
 func TestStartElection(t *testing.T) {
-	t.Run("becomes leader", func(t *testing.T) {
+	t.Run("wins with a majority of votes", func(t *testing.T) {
 		nodes, _ := cluster(t, 5, nil)
 		raft := nodes[1].raft
 
@@ -197,7 +316,7 @@ func TestStartElection(t *testing.T) {
 		}
 	})
 
-	t.Run("candidate is term stale", func(t *testing.T) {
+	t.Run("steps down when a peer reports a higher term", func(t *testing.T) {
 		nodes, _ := cluster(t, 5, nil)
 		var candidateId uint64 = 1
 		raft := nodes[candidateId].raft
@@ -225,7 +344,7 @@ func TestStartElection(t *testing.T) {
 		}
 	})
 
-	t.Run("count crashed peers as no vote", func(t *testing.T) {
+	t.Run("wins while two peers are down", func(t *testing.T) {
 		nodes, _ := cluster(t, 5, nil)
 		nodes[3].stop()
 		nodes[4].stop()
@@ -239,7 +358,7 @@ func TestStartElection(t *testing.T) {
 
 	})
 
-	t.Run("remains candidate when majority is down", func(t *testing.T) {
+	t.Run("stays a candidate when a majority is down", func(t *testing.T) {
 		nodes, _ := cluster(t, 5, nil)
 		nodes[3].stop()
 		nodes[4].stop()
@@ -254,7 +373,7 @@ func TestStartElection(t *testing.T) {
 
 	})
 
-	t.Run("slow vote response is not counted", func(t *testing.T) {
+	t.Run("stays a candidate when votes arrive after the timeout", func(t *testing.T) {
 		delayDuration := 500 * time.Millisecond
 		delay := map[uint64]time.Duration{
 			2: delayDuration,
@@ -271,7 +390,7 @@ func TestStartElection(t *testing.T) {
 
 	})
 
-	t.Run("lagging peer adopts newer term and votes", func(t *testing.T) {
+	t.Run("delayed peers vote in the newer term", func(t *testing.T) {
 		const lag = 4 * time.Second
 		lagging := []uint64{3, 4}
 
@@ -329,17 +448,133 @@ func TestRunElectionTimer(t *testing.T) {
 	// else timeout at somepoint
 }
 
+func TestAppendEntries(t *testing.T) {
+	t.Run("rejects an append from a stale leader", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
+		raft.currentTerm = 5
+		res, err := raft.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 1})
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if res.Term != 5 {
+			t.Errorf("actual term: expected 5, got %d", res.Term)
+		}
+
+		if res.Success {
+			t.Errorf("expected append to failed")
+		}
+	})
+	t.Run("rejects when there is no entry at prevLogIndex", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
+		raft.currentTerm = 1
+		raft.logs = append(raft.logs, makeLogs()...)
+
+		res, err := raft.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 1, PrevLogIndex: uint64(len(raft.logs)) + 1})
+
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if res.Success {
+			t.Errorf("expected append to failed")
+		}
+
+		if res.Term != 1 {
+			t.Errorf("actual term: expected 1, got %d", res.Term)
+		}
+	})
+
+	t.Run("rejects when the term at prevLogIndex differs", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
+
+		raft.currentTerm = 1
+		raft.logs = append(raft.logs, makeLogs()...)
+
+		res, err := raft.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 1, PrevLogIndex: uint64(len(raft.logs))})
+
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if res.Success {
+			t.Errorf("expected append to failed")
+		}
+
+		if res.Term != raft.currentTerm {
+			t.Errorf("actual term: expected 1, got %d", res.Term)
+		}
+
+	})
+
+	t.Run("truncates entries that conflict with the new ones", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, 5)
+
+		raft.currentTerm = 1
+		raft.logs = append(raft.logs, makeLogs()...)
+		logSize := len(raft.logs)
+
+		log := []*proto.LogEntry{{Term: 3, Cmd: "c"}}
+		res, err := raft.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 3, PrevLogIndex: 2, PrevLogTerm: 1,
+				Entries: log})
+
+		fmt.Println("result", len(raft.logs))
+
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+
+		if !res.Success {
+			t.Errorf("expected append to succeed")
+		}
+
+		if raft.currentTerm != 3 {
+			t.Errorf("actual term: expected 3, got %d", raft.currentTerm)
+		}
+
+		if len(raft.logs) != 3 && logSize < len(raft.logs) {
+			t.Errorf("log size: expected 3, got %d", len(raft.logs))
+		}
+
+	})
+}
+
 func TestRandomElectionTimeout(t *testing.T) {
 	randomTime := randomElectionTimeout()
 	if randomTime > 300*time.Millisecond || randomTime < 100*time.Millisecond {
 		t.Errorf("duration is expected to within 100-300ms, buy got %d", randomTime)
 	}
-
 }
 
 // HELPERS
 func uint64Ptr(v uint64) *uint64 {
 	return new(v)
+}
+
+// newRaft builds a single node with n-1 peers whose addresses nothing is
+// serving, for tests that call the handlers in process.
+func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
+	t.Helper()
+
+	peers := make(map[uint64]string, n)
+	for i := 1; i <= n; i++ {
+		peers[uint64(i)] = "localhost:0"
+	}
+
+	if _, ok := peers[id]; !ok {
+		t.Fatalf("id %d is not in the cluster", id)
+	}
+
+	raft := New(id, peers)
+	if raft == nil {
+		t.Fatal("raft initialization failed")
+	}
+
+	return raft, peers
 }
 
 func cluster(t *testing.T, n int, delays map[uint64]time.Duration) (map[uint64]*node, map[uint64]string) {
@@ -388,8 +623,8 @@ func start(t *testing.T, raft *Raft, lis net.Listener, opt ...grpc.ServerOption)
 	t.Cleanup(stop)
 
 	go func() {
-		if err := server.Serve(lis); err != nil {
-			log.Printf("node %d serve: %v", raft.id, err)
+		if err := server.Serve(lis); err != nil && err != grpc.ErrServerStopped {
+			fmt.Printf("node %d serve: %v", raft.id, err)
 		}
 	}()
 
@@ -447,6 +682,16 @@ func delay(duration time.Duration) grpc.ServerOption {
 		time.Sleep(duration)
 		return resp, err
 	})
+}
+
+func makeLogs() []*proto.LogEntry {
+	return []*proto.LogEntry{
+		{Term: 1, Cmd: "set a=1"},
+		{Term: 1, Cmd: "set b=2"},
+		{Term: 2, Cmd: "set c=3"},
+		{Term: 3, Cmd: "set d=4"},
+		{Term: 3, Cmd: "set e=5"},
+	}
 }
 
 type node struct {
