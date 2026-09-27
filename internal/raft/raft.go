@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"math/rand"
 	"sync"
 	"time"
@@ -32,6 +33,8 @@ func (s RaftState) String() string {
 		return "Unknown"
 	}
 }
+
+var ErrStaleIndex = errors.New("log index is stale")
 
 type Raft struct {
 	mu          sync.Mutex
@@ -242,7 +245,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		if int(req.PrevLogIndex) > followerLogIndex {
 			// custom the error such that the leader retries with a lesser index
 			// until they match
-			return no, nil
+			return no, ErrStaleIndex
 		}
 
 		// contains, but the log doesn't match
