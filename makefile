@@ -4,3 +4,7 @@ gen:
 	@protoc --go_out=. --go_opt=paths=source_relative \
 		--go-grpc_out=. --go-grpc_opt=paths=source_relative \
 		proto/raft.proto
+
+print-covr:
+	@go test -coverprofile=cover.out ./internal/raft/ && go tool cover -func=cover.out && \
+		go tool cover -html=cover.out
