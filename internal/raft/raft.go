@@ -135,9 +135,6 @@ func (r *Raft) StartElection() {
 	majority := (len(peers) / 2) + 1
 
 	for _, v := range peers {
-		if v.id == id {
-			continue
-		}
 
 		go func(client proto.RaftClient) {
 			ctx, cancel := context.WithTimeout(context.Background(), r.voteTimeout)
@@ -243,7 +240,6 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	followerLogIndex := len(r.logs)
 	if req.PrevLogIndex != 0 {
 		if int(req.PrevLogIndex) > followerLogIndex {
-
 			// custom the error such that the leader retries with a lesser index
 			// until they match
 			return no, nil
