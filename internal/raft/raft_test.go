@@ -279,7 +279,7 @@ func TestRequestVote(t *testing.T) {
 		raft.currentTerm = actualTerm
 
 		req := &proto.RequestVoteRequest{Term: actualTerm,
-			LastLogTerm: actualTerm - 1, LastLogIndex: uint64(len(raft.logs)) - 1}
+			LastLogTerm: actualTerm, LastLogIndex: uint64(len(raft.logs)) - 1}
 
 		res, err := raft.RequestVote(context.Background(), req)
 		if err != nil {
@@ -444,8 +444,36 @@ func TestRunElectionTimer(t *testing.T) {
 		go node.raft.RunElectionTimer()
 	}
 
-	// keep checking call until all are done
-	// else timeout at somepoint
+	// keep checking until there is a leader
+
+	deadline := time.Now().Add(3 * time.Second)
+
+	// term -> leader id -> bool
+	leaderPerTerm := map[uint64]map[uint64]bool{}
+
+	for time.Now().Before(deadline) {
+		for _, node := range nodes {
+			node.raft.mu.Lock()
+			raft := node.raft
+			isLeader := raft.state == Leader
+			term := raft.currentTerm
+			node.raft.mu.Unlock()
+			if isLeader {
+				if leaderPerTerm[term] == nil {
+					leaderPerTerm[term] = make(map[uint64]bool)
+				}
+				leaderPerTerm[term][raft.id] = true
+			}
+
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	for term, v := range leaderPerTerm {
+		if len(v) > 1 {
+			t.Errorf("term %d has multiple leaders: %v", term, len(v))
+		}
+	}
 }
 
 func TestAppendEntries(t *testing.T) {
@@ -474,8 +502,8 @@ func TestAppendEntries(t *testing.T) {
 		res, err := raft.AppendEntries(context.Background(),
 			&proto.AppendEntriesRequest{Term: 1, PrevLogIndex: uint64(len(raft.logs)) + 1})
 
-		if err != nil {
-			t.Errorf("unexpected error: %v", err)
+		if err != ErrStaleIndex {
+			t.Errorf("error: expected %v, got %v", ErrStaleIndex, err)
 		}
 
 		if res.Success {
@@ -547,6 +575,31 @@ func TestRandomElectionTimeout(t *testing.T) {
 	randomTime := randomElectionTimeout()
 	if randomTime > 300*time.Millisecond || randomTime < 100*time.Millisecond {
 		t.Errorf("duration is expected to within 100-300ms, buy got %d", randomTime)
+	}
+}
+
+func TestRaftState(t *testing.T) {
+	var (
+		a           = Leader
+		b           = Follower
+		c           = Candidate
+		u RaftState = 99
+	)
+
+	if a.String() != "Leader" {
+		t.Errorf("expected Leader, got %s", a.String())
+	}
+
+	if b.String() != "Follower" {
+		t.Errorf("expected Follower, got %s", b.String())
+	}
+
+	if c.String() != "Candidate" {
+		t.Errorf("expected Candidate, got %s", c.String())
+	}
+
+	if u.String() != "Unknown" {
+		t.Errorf("expected Unknown, got %s", u.String())
 	}
 }
 
