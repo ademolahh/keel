@@ -34,24 +34,27 @@ func (s RaftState) String() string {
 }
 
 type Raft struct {
-	mu          sync.Mutex
+	//
 	currentTerm uint64
 	votedFor    *uint64
 	id          uint64
+	logs        []*proto.LogEntry
 
-	state RaftState
-	peers []peer
-
-	logs []*proto.LogEntry
-
-	electionDeadline time.Time
-	voteTimeout      time.Duration
+	commitIndex uint64
+	lastApplied uint64
 
 	nextIndex  map[uint64]uint64
 	matchIndex map[uint64]uint64
 
+	peers []peer
+	state RaftState
+
+	electionDeadline time.Time
+	voteTimeout      time.Duration
+
 	killOnce sync.Once
 	done     chan struct{}
+	mu       sync.Mutex
 
 	proto.UnimplementedRaftServer
 }
@@ -142,7 +145,7 @@ func (r *Raft) StartElection() {
 		CandidateId: id,
 	}
 
-	majority := (len(peers) / 2) + 1
+	majority := majority(len(peers))
 
 	for _, peer := range peers {
 
@@ -204,6 +207,8 @@ func (r *Raft) Append(cmd string) bool {
 	r.logs = append(r.logs, entry...)
 	r.mu.Unlock()
 
+	majority := majority(peerSize)
+
 	var count int = 1
 	for _, peer := range r.peers {
 
@@ -248,7 +253,6 @@ func (r *Raft) Append(cmd string) bool {
 					r.mu.Lock()
 					count++
 
-					majority := majority(peerSize)
 					if count >= majority {
 						select {
 						case ch <- true:
