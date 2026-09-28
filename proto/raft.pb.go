@@ -229,6 +229,7 @@ type AppendEntriesResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Term          uint64                 `protobuf:"varint,1,opt,name=term,proto3" json:"term,omitempty"`
 	Success       bool                   `protobuf:"varint,2,opt,name=success,proto3" json:"success,omitempty"`
+	Hint          *uint64                `protobuf:"varint,3,opt,name=hint,proto3,oneof" json:"hint,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -275,6 +276,13 @@ func (x *AppendEntriesResponse) GetSuccess() bool {
 		return x.Success
 	}
 	return false
+}
+
+func (x *AppendEntriesResponse) GetHint() uint64 {
+	if x != nil && x.Hint != nil {
+		return *x.Hint
+	}
+	return 0
 }
 
 type LogEntry struct {
@@ -348,10 +356,12 @@ const file_proto_raft_proto_rawDesc = "" +
 	"\x0eprev_log_index\x18\x03 \x01(\x04R\fprevLogIndex\x12\"\n" +
 	"\rprev_log_term\x18\x04 \x01(\x04R\vprevLogTerm\x12#\n" +
 	"\aentries\x18\x05 \x03(\v2\t.LogEntryR\aentries\x12\"\n" +
-	"\fleaderCommit\x18\x06 \x01(\x04R\fleaderCommit\"E\n" +
+	"\fleaderCommit\x18\x06 \x01(\x04R\fleaderCommit\"g\n" +
 	"\x15AppendEntriesResponse\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x18\n" +
-	"\asuccess\x18\x02 \x01(\bR\asuccess\"0\n" +
+	"\asuccess\x18\x02 \x01(\bR\asuccess\x12\x17\n" +
+	"\x04hint\x18\x03 \x01(\x04H\x00R\x04hint\x88\x01\x01B\a\n" +
+	"\x05_hint\"0\n" +
 	"\bLogEntry\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\x04R\x04term\x12\x10\n" +
 	"\x03cmd\x18\x02 \x01(\tR\x03cmd2\x80\x01\n" +
@@ -397,6 +407,7 @@ func file_proto_raft_proto_init() {
 	if File_proto_raft_proto != nil {
 		return
 	}
+	file_proto_raft_proto_msgTypes[3].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
