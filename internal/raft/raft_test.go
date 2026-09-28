@@ -487,7 +487,7 @@ func TestAppendEntries(t *testing.T) {
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
 		}
-
+ 
 		if res.Term != 5 {
 			t.Errorf("actual term: expected 5, got %d", res.Term)
 		}
@@ -612,8 +612,6 @@ func TestAppend(t *testing.T) {
 
 			}
 		}
-
-		fmt.Println("", cmdEntered)
 
 		majority := majority(size)
 		if cmdEntered < majority {
