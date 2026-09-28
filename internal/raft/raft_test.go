@@ -12,9 +12,14 @@ import (
 	"google.golang.org/grpc"
 )
 
+const (
+	DEFAULT_CLUSTER_SIZE        = 5
+	DEFAULT_LEADER_ID    uint64 = 1
+)
+
 func TestNew(t *testing.T) {
-	raft, peers := newRaft(t, 1, 5)
 	currTime := time.Now()
+	raft, peers := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 	if raft.id != 1 {
 		t.Errorf("node %d: expected %d, go %d", raft.id, 1, raft.id)
@@ -39,7 +44,7 @@ func TestNew(t *testing.T) {
 }
 
 func TestGetState(t *testing.T) {
-	raft, _ := newRaft(t, 1, 5)
+	raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 	if raft.state != Follower {
 		t.Errorf("state: expected Follower, got: %s", raft.state.String())
 	}
@@ -47,7 +52,7 @@ func TestGetState(t *testing.T) {
 
 func TestRequestVote(t *testing.T) {
 	t.Run("rejects a candidate whose term is behind", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 		raft.currentTerm = 5
 		raft.state = Follower
@@ -87,7 +92,7 @@ func TestRequestVote(t *testing.T) {
 	})
 
 	t.Run("adopts a higher term and grants the vote", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 		raft.currentTerm = 5
 		raft.votedFor = uint64Ptr(1)
@@ -128,7 +133,7 @@ func TestRequestVote(t *testing.T) {
 	})
 
 	t.Run("grants the first vote of a term", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 		raft.currentTerm = 5
 		raft.state = Follower
@@ -168,7 +173,7 @@ func TestRequestVote(t *testing.T) {
 	})
 
 	t.Run("rejects a second candidate in the same term", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 		raft.currentTerm = 5
 		raft.votedFor = uint64Ptr(3)
@@ -209,7 +214,7 @@ func TestRequestVote(t *testing.T) {
 	})
 
 	t.Run("grants a repeat request from the same candidate", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 		raft.currentTerm = 5
 		raft.votedFor = uint64Ptr(2)
@@ -250,7 +255,7 @@ func TestRequestVote(t *testing.T) {
 	})
 
 	t.Run("rejects a longer log whose last term is behind", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 		raft.logs = append(raft.logs, makeLogs()...)
 		raft.currentTerm = 3
@@ -296,8 +301,8 @@ func TestRequestVote(t *testing.T) {
 
 func TestStartElection(t *testing.T) {
 	t.Run("wins with a majority of votes", func(t *testing.T) {
-		nodes, _ := cluster(t, 5, nil)
-		raft := nodes[1].raft
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		raft := nodes[DEFAULT_LEADER_ID].raft
 
 		_, currentTerm, _ := snapshot(raft)
 
@@ -317,16 +322,15 @@ func TestStartElection(t *testing.T) {
 	})
 
 	t.Run("steps down when a peer reports a higher term", func(t *testing.T) {
-		nodes, _ := cluster(t, 5, nil)
-		var candidateId uint64 = 1
-		raft := nodes[candidateId].raft
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		raft := nodes[DEFAULT_LEADER_ID].raft
 
 		raft.currentTerm = 2
 
 		var actualCurrentTerm uint64 = 5
 
 		for id, node := range nodes {
-			if id == candidateId {
+			if id == DEFAULT_LEADER_ID {
 				continue
 			}
 
@@ -345,12 +349,11 @@ func TestStartElection(t *testing.T) {
 	})
 
 	t.Run("wins while two peers are down", func(t *testing.T) {
-		nodes, _ := cluster(t, 5, nil)
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		nodes[3].stop()
 		nodes[4].stop()
 
-		var candidateId uint64 = 1
-		raft := nodes[candidateId].raft
+		raft := nodes[DEFAULT_LEADER_ID].raft
 
 		raft.StartElection()
 
@@ -359,13 +362,12 @@ func TestStartElection(t *testing.T) {
 	})
 
 	t.Run("stays a candidate when a majority is down", func(t *testing.T) {
-		nodes, _ := cluster(t, 5, nil)
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		nodes[3].stop()
 		nodes[4].stop()
 		nodes[5].stop()
 
-		var candidateId uint64 = 1
-		raft := nodes[candidateId].raft
+		raft := nodes[DEFAULT_LEADER_ID].raft
 
 		raft.StartElection()
 
@@ -381,8 +383,8 @@ func TestStartElection(t *testing.T) {
 			4: delayDuration,
 		}
 
-		nodes, _ := cluster(t, 5, delay)
-		raft := nodes[1].raft
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, delay)
+		raft := nodes[DEFAULT_LEADER_ID].raft
 
 		raft.StartElection()
 
@@ -400,11 +402,11 @@ func TestStartElection(t *testing.T) {
 			delay[id] = lag
 		}
 
-		nodes, _ := cluster(t, 5, delay)
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, delay)
 
-		nodes[1].raft.StartElection()
-		waitForLeader(t, nodes[1].raft, lag/4)
-		_, firstTerm, _ := snapshot(nodes[1].raft)
+		nodes[DEFAULT_LEADER_ID].raft.StartElection()
+		waitForLeader(t, nodes[DEFAULT_LEADER_ID].raft, lag/4)
+		_, firstTerm, _ := snapshot(nodes[DEFAULT_LEADER_ID].raft)
 
 		nodes[5].raft.StartElection()
 		waitForLeader(t, nodes[5].raft, lag/4)
@@ -432,7 +434,7 @@ func TestStartElection(t *testing.T) {
 }
 
 func TestRunElectionTimer(t *testing.T) {
-	nodes, _ := cluster(t, 5, nil)
+	nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 
 	t.Cleanup(func() {
 		for _, node := range nodes {
@@ -478,7 +480,7 @@ func TestRunElectionTimer(t *testing.T) {
 
 func TestAppendEntries(t *testing.T) {
 	t.Run("rejects an append from a stale leader", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.currentTerm = 5
 		res, err := raft.AppendEntries(context.Background(),
 			&proto.AppendEntriesRequest{Term: 1})
@@ -495,15 +497,15 @@ func TestAppendEntries(t *testing.T) {
 		}
 	})
 	t.Run("rejects when there is no entry at prevLogIndex", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.currentTerm = 1
 		raft.logs = append(raft.logs, makeLogs()...)
 
 		res, err := raft.AppendEntries(context.Background(),
 			&proto.AppendEntriesRequest{Term: 1, PrevLogIndex: uint64(len(raft.logs)) + 1})
 
-		if err != ErrStaleIndex {
-			t.Errorf("error: expected %v, got %v", ErrStaleIndex, err)
+		if err != nil {
+			t.Errorf("unexpected error: %v", err)
 		}
 
 		if res.Success {
@@ -516,7 +518,7 @@ func TestAppendEntries(t *testing.T) {
 	})
 
 	t.Run("rejects when the term at prevLogIndex differs", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 		raft.currentTerm = 1
 		raft.logs = append(raft.logs, makeLogs()...)
@@ -539,7 +541,7 @@ func TestAppendEntries(t *testing.T) {
 	})
 
 	t.Run("truncates entries that conflict with the new ones", func(t *testing.T) {
-		raft, _ := newRaft(t, 1, 5)
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
 		raft.currentTerm = 1
 		raft.logs = append(raft.logs, makeLogs()...)
@@ -549,8 +551,6 @@ func TestAppendEntries(t *testing.T) {
 		res, err := raft.AppendEntries(context.Background(),
 			&proto.AppendEntriesRequest{Term: 3, PrevLogIndex: 2, PrevLogTerm: 1,
 				Entries: log})
-
-		fmt.Println("result", len(raft.logs))
 
 		if err != nil {
 			t.Errorf("unexpected error: %v", err)
@@ -569,6 +569,140 @@ func TestAppendEntries(t *testing.T) {
 		}
 
 	})
+}
+
+func TestAppend(t *testing.T) {
+	t.Run("appends the command to the leader's log", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		r := nodes[DEFAULT_LEADER_ID].raft
+		r.state = Leader
+		r.InitNextIndex()
+		logSize := len(r.logs)
+
+		r.Append("set a=1")
+
+		if len(r.logs) != logSize+1 {
+			t.Errorf("log size: expected %d, got %d", logSize+1, len(r.logs))
+		}
+	})
+
+	t.Run("replicates the entry to a majority of peers", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		r := nodes[DEFAULT_LEADER_ID].raft
+		r.state = Leader
+		r.InitNextIndex()
+		size := len(nodes)
+
+		res := r.Append("set a = 1")
+
+		if !res {
+			t.Errorf("entry failed to commit")
+		}
+
+		// time.Sleep(1 * time.Second)
+
+		cmdEntered := 0
+		for _, node := range nodes {
+			node.raft.mu.Lock()
+			len := len(node.raft.logs)
+			node.raft.mu.Unlock()
+
+			if len >= 1 {
+				cmdEntered += 1
+
+			}
+		}
+
+		fmt.Println("", cmdEntered)
+
+		majority := majority(size)
+		if cmdEntered < majority {
+			t.Errorf("command entered: expected %d, received: %d", majority, cmdEntered)
+		}
+	})
+
+	t.Run("catches up a follower that is far behind", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		const STALE_ID uint64 = 3
+		const LATEST_TERM uint64 = 3
+		nodes[DEFAULT_LEADER_ID].raft.state = Leader
+
+		logs := makeLogs()
+
+		for _, node := range nodes {
+			if node.raft.id == STALE_ID {
+				continue
+			}
+
+			node.raft.logs = append(node.raft.logs, logs...)
+			node.raft.currentTerm = LATEST_TERM
+		}
+
+		nodes[DEFAULT_LEADER_ID].raft.nextIndex[1] = uint64(len(logs)) + 1
+		nodes[STALE_ID].raft.currentTerm = 1
+		nodes[STALE_ID].raft.logs = append(nodes[STALE_ID].raft.logs, logs[0])
+		nodes[DEFAULT_LEADER_ID].raft.InitNextIndex()
+
+		res := nodes[DEFAULT_LEADER_ID].raft.Append("set a=1")
+		if !res {
+			t.Fatal("append failed")
+		}
+
+		time.Sleep(1 * time.Second)
+
+		nodes[STALE_ID].raft.mu.Lock()
+		len := len(nodes[STALE_ID].raft.logs)
+		nodes[STALE_ID].raft.mu.Unlock()
+
+		if len != 6 {
+			t.Errorf("stale log: expected 6, got %d", len)
+		}
+	})
+}
+
+func TestGetMatchingTermIndex(t *testing.T) {
+	// makeLogs holds terms 1, 1, 2, 3, 3 at positions 1 to 5
+
+	t.Run("returns the highest position holding the term", func(t *testing.T) {
+		got := getMatchingTermIndex(makeLogs(), 1, 5)
+
+		if got == nil || *got != 2 {
+			t.Errorf("index: expected 2, got %v", got)
+		}
+	})
+
+	t.Run("ignores positions above prevLogIndex", func(t *testing.T) {
+		got := getMatchingTermIndex(makeLogs(), 3, 3)
+
+		if got != nil {
+			t.Errorf("index: expected nil, got %d", *got)
+		}
+	})
+
+	t.Run("finds the term at the first position", func(t *testing.T) {
+		got := getMatchingTermIndex(makeLogs(), 1, 1)
+
+		if got == nil || *got != 1 {
+			t.Errorf("index: expected 1, got %v", got)
+		}
+	})
+
+	t.Run("clamps prevLogIndex to the log length", func(t *testing.T) {
+		got := getMatchingTermIndex(makeLogs(), 3, 99)
+
+		if got == nil || *got != 5 {
+			t.Errorf("index: expected 5, got %v", got)
+		}
+	})
+
+	t.Run("returns nil when prevLogIndex is zero", func(t *testing.T) {
+		got := getMatchingTermIndex(makeLogs(), 1, 0)
+
+		if got != nil {
+			t.Errorf("index: expected nil, got %d", *got)
+		}
+	})
+
 }
 
 func TestRandomElectionTimeout(t *testing.T) {
