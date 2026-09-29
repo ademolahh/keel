@@ -89,18 +89,13 @@ func New(id uint64, peerClient map[uint64]string) *Raft {
 		logs:             []*proto.LogEntry{},
 		voteTimeout:      5 * time.Second,
 		nextIndex:        make(map[uint64]uint64),
+		matchIndex:       make(map[uint64]uint64),
 		done:             make(chan struct{}),
 		electionDeadline: time.Now().Add(randomElectionTimeout())}
 }
 
 func (r *Raft) Kill() {
 	r.killOnce.Do(func() { close(r.done) })
-}
-
-func (r *Raft) initNextIndex() {
-	for _, peer := range r.peers {
-		r.nextIndex[peer.id] = uint64(len(r.logs)) + 1
-	}
 }
 
 func (r *Raft) RunElectionTimer() {
@@ -177,6 +172,7 @@ func (r *Raft) StartElection() {
 					r.state = Leader
 					r.nextIndex[peer.id] = uint64(len(r.logs)) + 1
 					r.initNextIndex()
+					r.initMatchIndex()
 					// initialize next index to next index after the last log
 					//
 					// r.emptyAppend()
@@ -193,18 +189,19 @@ func (r *Raft) Append(cmd string) bool {
 	r.mu.Lock()
 	term := r.currentTerm
 	leaderId := r.id
-	logSize := len(r.logs) - 1
 	peerSize := len(r.peers)
+	commitIndex := r.commitIndex
 
 	lastLog := &proto.LogEntry{}
 
-	if logSize > 0 {
+	if len(r.logs)-1 > 0 {
 		lastLog = r.logs[len(r.logs)-1]
 	}
 
 	entry := []*proto.LogEntry{{Term: term, Cmd: cmd}}
 
 	r.logs = append(r.logs, entry...)
+	newLogSize := uint64(len(r.logs))
 	r.mu.Unlock()
 
 	majority := majority(peerSize)
@@ -225,6 +222,7 @@ func (r *Raft) Append(cmd string) bool {
 				PrevLogIndex: prevLogIndex,
 				PrevLogTerm:  lastLog.Term,
 				Entries:      e,
+				LeaderCommit: commitIndex,
 			}
 
 			for {
@@ -252,10 +250,14 @@ func (r *Raft) Append(cmd string) bool {
 				if res.Success {
 					r.mu.Lock()
 					count++
+					// i := req.PrevLogIndex + uint64(len(req.Entries))
+					r.matchIndex[peer.id] = newLogSize
+					r.nextIndex[peer.id] = newLogSize + 1
 
 					if count >= majority {
 						select {
 						case ch <- true:
+							r.commitIndex = newLogSize
 						default:
 						}
 					}
@@ -267,11 +269,12 @@ func (r *Raft) Append(cmd string) bool {
 		}(peer.client)
 	}
 
-	return <-ch
-}
-
-func majority(size int) int {
-	return (size / 2) + 1
+	select {
+	case <-ch:
+		return true
+	case <-time.After(500 * time.Millisecond):
+		return false
+	}
 }
 
 func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (*proto.RequestVoteResponse, error) {
@@ -394,12 +397,31 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	// replicated it
 	if len(req.Entries) > 0 {
 		r.logs = append(r.logs[:newIndex-1], req.Entries...)
+	}
 
+	if req.LeaderCommit > r.commitIndex {
+		r.commitIndex = min(req.LeaderCommit, uint64(len(r.logs)))
 	}
 
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 
 	return &proto.AppendEntriesResponse{Term: r.currentTerm, Success: true}, nil
+}
+
+func (r *Raft) initNextIndex() {
+	for _, peer := range r.peers {
+		r.nextIndex[peer.id] = uint64(len(r.logs)) + 1
+	}
+}
+
+func (r *Raft) initMatchIndex() {
+	for _, peer := range r.peers {
+		r.matchIndex[peer.id] = 0
+	}
+}
+
+func majority(size int) int {
+	return (size / 2) + 1
 }
 
 func randomElectionTimeout() time.Duration {
