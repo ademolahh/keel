@@ -575,7 +575,7 @@ func TestAppend(t *testing.T) {
 		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		r := nodes[DEFAULT_LEADER_ID].raft
 		r.state = Leader
-		r.InitNextIndex()
+		r.initNextIndex()
 		logSize := len(r.logs)
 
 		r.Append("set a=1")
@@ -589,7 +589,7 @@ func TestAppend(t *testing.T) {
 		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		r := nodes[DEFAULT_LEADER_ID].raft
 		r.state = Leader
-		r.InitNextIndex()
+		r.initNextIndex()
 		size := len(nodes)
 
 		res := r.Append("set a = 1")
@@ -638,7 +638,7 @@ func TestAppend(t *testing.T) {
 		nodes[DEFAULT_LEADER_ID].raft.nextIndex[1] = uint64(len(logs)) + 1
 		nodes[STALE_ID].raft.currentTerm = 1
 		nodes[STALE_ID].raft.logs = append(nodes[STALE_ID].raft.logs, logs[0])
-		nodes[DEFAULT_LEADER_ID].raft.InitNextIndex()
+		nodes[DEFAULT_LEADER_ID].raft.initNextIndex()
 
 		res := nodes[DEFAULT_LEADER_ID].raft.Append("set a=1")
 		if !res {

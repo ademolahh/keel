@@ -97,7 +97,7 @@ func (r *Raft) Kill() {
 	r.killOnce.Do(func() { close(r.done) })
 }
 
-func (r *Raft) InitNextIndex() {
+func (r *Raft) initNextIndex() {
 	for _, peer := range r.peers {
 		r.nextIndex[peer.id] = uint64(len(r.logs)) + 1
 	}
@@ -176,7 +176,7 @@ func (r *Raft) StartElection() {
 				if votes >= majority {
 					r.state = Leader
 					r.nextIndex[peer.id] = uint64(len(r.logs)) + 1
-					r.InitNextIndex()
+					r.initNextIndex()
 					// initialize next index to next index after the last log
 					//
 					// r.emptyAppend()
