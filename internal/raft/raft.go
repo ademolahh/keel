@@ -332,18 +332,6 @@ func (r *Raft) Apply() {
 	}
 }
 
-func (r *Raft) initNextIndex() {
-	for _, peer := range r.peers {
-		r.nextIndex[peer.id] = uint64(len(r.logs)) + 1
-	}
-}
-
-func (r *Raft) initMatchIndex() {
-	for _, peer := range r.peers {
-		r.matchIndex[peer.id] = 0
-	}
-}
-
 func majority(size int) int {
 	return (size / 2) + 1
 }

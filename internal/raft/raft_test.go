@@ -819,6 +819,18 @@ func uint64Ptr(v uint64) *uint64 {
 	return new(v)
 }
 
+func (r *Raft) initNextIndex() {
+	for _, peer := range r.peers {
+		r.nextIndex[peer.id] = uint64(len(r.logs)) + 1
+	}
+}
+
+func (r *Raft) initMatchIndex() {
+	for _, peer := range r.peers {
+		r.matchIndex[peer.id] = 0
+	}
+}
+
 // newRaft builds a single node with n-1 peers whose addresses nothing is
 // serving, for tests that call the handlers in process.
 func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
