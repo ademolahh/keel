@@ -12,6 +12,8 @@ import (
 	"google.golang.org/grpc"
 )
 
+// lastApplied <= commitIndex <= last log index - invariant
+
 const (
 	DEFAULT_CLUSTER_SIZE        = 5
 	DEFAULT_LEADER_ID    uint64 = 1
@@ -576,6 +578,7 @@ func TestAppend(t *testing.T) {
 		r := nodes[DEFAULT_LEADER_ID].raft
 		r.state = Leader
 		r.initNextIndex()
+		r.initMatchIndex()
 		logSize := len(r.logs)
 
 		r.Append("set a=1")
@@ -590,6 +593,7 @@ func TestAppend(t *testing.T) {
 		r := nodes[DEFAULT_LEADER_ID].raft
 		r.state = Leader
 		r.initNextIndex()
+		r.initMatchIndex()
 		size := len(nodes)
 
 		res := r.Append("set a = 1")
@@ -639,6 +643,7 @@ func TestAppend(t *testing.T) {
 		nodes[STALE_ID].raft.currentTerm = 1
 		nodes[STALE_ID].raft.logs = append(nodes[STALE_ID].raft.logs, logs[0])
 		nodes[DEFAULT_LEADER_ID].raft.initNextIndex()
+		nodes[DEFAULT_LEADER_ID].raft.initMatchIndex()
 
 		res := nodes[DEFAULT_LEADER_ID].raft.Append("set a=1")
 		if !res {
