@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"math/rand"
+	"slices"
 	"sync"
 	"time"
 
@@ -206,7 +207,6 @@ func (r *Raft) Append(cmd string) bool {
 
 	majority := majority(peerSize)
 
-	var count int = 1
 	for _, peer := range r.peers {
 
 		go func(client proto.RaftClient) {
@@ -249,15 +249,18 @@ func (r *Raft) Append(cmd string) bool {
 
 				if res.Success {
 					r.mu.Lock()
-					count++
-					// i := req.PrevLogIndex + uint64(len(req.Entries))
-					r.matchIndex[peer.id] = newLogSize
-					r.nextIndex[peer.id] = newLogSize + 1
+					sentIndex := req.PrevLogIndex + uint64(len(req.Entries))
+					r.nextIndex[peer.id] = sentIndex + 1
+					r.matchIndex[peer.id] = sentIndex
 
-					if count >= majority {
+					idx := match(r.matchIndex, newLogSize)
+
+					n := idx[majority-1]
+
+					if n > r.commitIndex && r.logs[n-1].Term == r.currentTerm {
 						select {
 						case ch <- true:
-							r.commitIndex = newLogSize
+							r.commitIndex = n
 						default:
 						}
 					}
@@ -272,9 +275,24 @@ func (r *Raft) Append(cmd string) bool {
 	select {
 	case <-ch:
 		return true
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(2 * time.Second):
 		return false
 	}
+}
+
+func match(matchIndex map[uint64]uint64, leader uint64) []uint64 {
+	index := []uint64{}
+	for _, idx := range matchIndex {
+		index = append(index, idx)
+	}
+
+	index = append(index, leader)
+
+	slices.SortFunc(index, func(a, b uint64) int {
+		return int(b - a)
+	})
+
+	return index
 }
 
 func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (*proto.RequestVoteResponse, error) {
@@ -406,6 +424,19 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 
 	return &proto.AppendEntriesResponse{Term: r.currentTerm, Success: true}, nil
+}
+
+func (r *Raft) Apply() {
+	ticker := time.NewTicker(10 * time.Millisecond)
+
+	for range ticker.C {
+		if r.commitIndex > r.lastApplied {
+			r.lastApplied = r.lastApplied + 1
+
+			_ = r.logs[r.lastApplied].Cmd
+			// r.stateMachine.Apply
+		}
+	}
 }
 
 func (r *Raft) initNextIndex() {
