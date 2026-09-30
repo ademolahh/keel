@@ -259,6 +259,7 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 			Entries:      append([]*proto.LogEntry(nil), r.logs[prevLogIndex:]...),
 			LeaderCommit: r.commitIndex,
 		}
+
 		majority := majority(len(r.peers))
 		r.mu.Unlock()
 
@@ -341,17 +342,4 @@ func randomElectionTimeout() time.Duration {
 	r := rand.Intn(maximum-minimum+1) + minimum
 
 	return time.Duration(r) * time.Millisecond
-}
-
-func getMatchingTermIndex(logs []*proto.LogEntry, term uint64, prevLogIndex int) *uint64 {
-	if prevLogIndex > len(logs) {
-		prevLogIndex = len(logs)
-	}
-
-	for i := prevLogIndex - 1; i >= 0; i-- {
-		if logs[i].Term == term {
-			return new(uint64(i) + 1)
-		}
-	}
-	return nil
 }

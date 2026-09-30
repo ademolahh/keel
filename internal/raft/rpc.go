@@ -137,3 +137,16 @@ func (r *Raft) AppendEntries(ctx context.Context,
 
 	return &proto.AppendEntriesResponse{Term: r.currentTerm, Success: true}, nil
 }
+
+func getMatchingTermIndex(logs []*proto.LogEntry, term uint64, prevLogIndex int) *uint64 {
+	if prevLogIndex > len(logs) {
+		prevLogIndex = len(logs)
+	}
+
+	for i := prevLogIndex - 1; i >= 0; i-- {
+		if logs[i].Term == term {
+			return new(uint64(i) + 1)
+		}
+	}
+	return nil
+}
