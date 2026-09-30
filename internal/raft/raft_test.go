@@ -660,6 +660,81 @@ func TestAppend(t *testing.T) {
 			t.Errorf("stale log: expected 6, got %d", len)
 		}
 	})
+
+	t.Run("returns false when a majority does not respond", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		r := nodes[DEFAULT_LEADER_ID].raft
+		r.state = Leader
+		r.initNextIndex()
+		r.initMatchIndex()
+
+		nodes[3].stop()
+		nodes[4].stop()
+		nodes[5].stop()
+
+		if r.Append("set a=1") {
+			t.Error("append: expected false, got true")
+		}
+	})
+}
+
+func TestHeartBeat(t *testing.T) {
+	t.Run("does nothing when not the leader", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		follower := nodes[2].raft
+
+		follower.mu.Lock()
+		deadline := follower.electionDeadline
+		follower.mu.Unlock()
+
+		nodes[DEFAULT_LEADER_ID].raft.HeartBeat()
+
+		time.Sleep(100 * time.Millisecond)
+
+		follower.mu.Lock()
+		reset := !follower.electionDeadline.Equal(deadline)
+		follower.mu.Unlock()
+
+		if reset {
+			t.Error("election deadline: expected unchanged, got reset")
+		}
+	})
+
+	t.Run("resets every follower's election deadline", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.state = Leader
+		leader.initNextIndex()
+		leader.initMatchIndex()
+
+		deadlines := make(map[uint64]time.Time)
+		for id, n := range nodes {
+			if id == DEFAULT_LEADER_ID {
+				continue
+			}
+
+			n.raft.mu.Lock()
+			deadlines[id] = n.raft.electionDeadline
+			n.raft.mu.Unlock()
+		}
+
+		leader.HeartBeat()
+
+		for id, before := range deadlines {
+			r := nodes[id].raft
+
+			ok := waitFor(t, time.Second, func() bool {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+
+				return !r.electionDeadline.Equal(before)
+			})
+
+			if !ok {
+				t.Errorf("node %d: expected election deadline to be reset", id)
+			}
+		}
+	})
 }
 
 func TestGetMatchingTermIndex(t *testing.T) {
