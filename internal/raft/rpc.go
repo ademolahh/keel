@@ -113,6 +113,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	if req.Term > r.currentTerm {
 		r.currentTerm = req.Term
 		r.state = Follower
+		r.votedFor = nil
 	}
 
 	// if log and term is the same, then all entry store the same command
