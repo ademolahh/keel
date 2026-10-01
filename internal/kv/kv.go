@@ -2,6 +2,7 @@ package kv
 
 import (
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -32,6 +33,12 @@ func (kv *KV) Apply(command string) any {
 		kv.set(cmd.Key, cmd.Value)
 	case "delete":
 		kv.delete(cmd.Key)
+	case "get":
+		value, ok := kv.get(cmd.Key)
+		if ok {
+			return value
+		}
+		return fmt.Errorf("not found")
 	}
 
 	return nil
