@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ademolahh/raftkv/internal/kv"
 	"github.com/ademolahh/raftkv/proto"
 	"google.golang.org/grpc"
 )
@@ -845,7 +846,7 @@ func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
 		t.Fatalf("id %d is not in the cluster", id)
 	}
 
-	raft := New(id, peers)
+	raft := New(id, peers, &kv.KV{})
 	if raft == nil {
 		t.Fatal("raft initialization failed")
 	}
@@ -874,7 +875,7 @@ func cluster(t *testing.T, n int, delays map[uint64]time.Duration) (map[uint64]*
 	}
 
 	for id, lst := range listeners {
-		r := New(id, peers)
+		r := New(id, peers, &kv.KV{})
 
 		var opts []grpc.ServerOption
 		if d, ok := delays[id]; ok {

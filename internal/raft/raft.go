@@ -21,6 +21,10 @@ const (
 	Candidate
 )
 
+type StateMachine interface {
+	Apply(cmd string) any
+}
+
 func (s RaftState) String() string {
 	switch s {
 	case Leader:
@@ -57,6 +61,8 @@ type Raft struct {
 	done     chan struct{}
 	mu       sync.Mutex
 
+	stateMachine StateMachine
+
 	proto.UnimplementedRaftServer
 }
 
@@ -65,7 +71,7 @@ type peer struct {
 	client proto.RaftClient
 }
 
-func New(id uint64, peerClient map[uint64]string) *Raft {
+func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine) *Raft {
 	var peers []peer
 
 	for pid, addr := range peerClient {
@@ -92,6 +98,7 @@ func New(id uint64, peerClient map[uint64]string) *Raft {
 		nextIndex:        make(map[uint64]uint64),
 		matchIndex:       make(map[uint64]uint64),
 		done:             make(chan struct{}),
+		stateMachine:     stateMachine,
 		electionDeadline: time.Now().Add(randomElectionTimeout())}
 }
 
@@ -235,6 +242,25 @@ func (r *Raft) HeartBeat() {
 	}
 }
 
+func (r *Raft) Apply() {
+	ticker := time.NewTicker(10 * time.Millisecond)
+
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-ticker.C:
+		}
+
+		if r.commitIndex > r.lastApplied {
+			r.lastApplied = r.lastApplied + 1
+
+			cmd := r.logs[r.lastApplied-1].Cmd
+			r.stateMachine.Apply(cmd)
+		}
+	}
+}
+
 func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 	for {
 		select {
@@ -312,25 +338,6 @@ func match(matchIndex map[uint64]uint64, leader uint64) []uint64 {
 	})
 
 	return index
-}
-
-func (r *Raft) Apply() {
-	ticker := time.NewTicker(10 * time.Millisecond)
-
-	for {
-		select {
-		case <-r.done:
-			return
-		case <-ticker.C:
-		}
-
-		if r.commitIndex > r.lastApplied {
-			r.lastApplied = r.lastApplied + 1
-
-			_ = r.logs[r.lastApplied].Cmd
-			// r.stateMachine.Apply
-		}
-	}
 }
 
 func majority(size int) int {
