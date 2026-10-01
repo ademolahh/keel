@@ -53,3 +53,9 @@ message InstallSnapshotRequest{
 message InstallSnapshotResponse{
   uint64 term = 1;
 }
+
+message PersistentState {
+  uint64            current_term = 1;
+  optional uint64   voted_for    = 2;
+  repeated LogEntry logs         = 3;
+}

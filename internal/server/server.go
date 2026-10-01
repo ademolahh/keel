@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -70,11 +71,7 @@ func Serve() error {
 		Handler: mux,
 	}
 
-	if err := s.ListenAndServe(); err != nil {
-		return err
-	}
-
-	return nil
+	return s.ListenAndServe()
 }
 
 func newRaft(id uint64, sm raft.StateMachine) (*raft.Raft, error) {
@@ -87,7 +84,14 @@ func newRaft(id uint64, sm raft.StateMachine) (*raft.Raft, error) {
 		return nil, fmt.Errorf("id %d is not in PEERS", id)
 	}
 
-	return raft.New(id, peers, sm), nil
+	dir := os.Getenv("DATA_DIR")
+	if dir == "" {
+		dir = "."
+	}
+
+	persister := raft.NewFilePersister(filepath.Join(dir, fmt.Sprintf("raft-%d.state", id)))
+
+	return raft.New(id, peers, sm, persister)
 }
 
 func parsePeers(s string) (map[uint64]string, error) {

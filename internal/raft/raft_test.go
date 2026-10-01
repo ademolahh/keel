@@ -992,6 +992,29 @@ func TestRaftState(t *testing.T) {
 }
 
 // HELPERS
+
+// memoryPersister keeps the state in memory. Cluster nodes can outlive their
+// test briefly, and this way their late saves never hit a removed directory.
+type memoryPersister struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+func (p *memoryPersister) Save(data []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.data = append([]byte(nil), data...)
+	return nil
+}
+
+func (p *memoryPersister) Load() ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.data, nil
+}
+
 // recorder is a state machine that remembers the commands applied to it.
 type recorder struct {
 	mu   sync.Mutex
@@ -1043,9 +1066,9 @@ func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
 		t.Fatalf("id %d is not in the cluster", id)
 	}
 
-	raft := New(id, peers, &kv.KV{})
-	if raft == nil {
-		t.Fatal("raft initialization failed")
+	raft, err := New(id, peers, &kv.KV{}, &memoryPersister{})
+	if err != nil {
+		t.Fatalf("raft initialization failed: %v", err)
 	}
 
 	return raft, peers
@@ -1072,7 +1095,10 @@ func cluster(t *testing.T, n int, delays map[uint64]time.Duration) (map[uint64]*
 	}
 
 	for id, lst := range listeners {
-		r := New(id, peers, &kv.KV{})
+		r, err := New(id, peers, &kv.KV{}, &memoryPersister{})
+		if err != nil {
+			t.Fatalf("raft initialization failed: %v", err)
+		}
 
 		var opts []grpc.ServerOption
 		if d, ok := delays[id]; ok {

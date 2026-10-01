@@ -11,6 +11,14 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
+	// save before the reply leaves whenever the term or vote changed
+	dirty := false
+	defer func() {
+		if dirty {
+			r.persist()
+		}
+	}()
+
 	if r.currentTerm > req.Term {
 		return &proto.RequestVoteResponse{
 			VoteGranted: false,
@@ -24,6 +32,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 		r.votedFor = nil
 		r.state = Follower
 		r.leaderId = 0
+		dirty = true
 	}
 
 	lastLogIndex := len(r.logs)
@@ -56,6 +65,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 	}
 
 	r.votedFor = &req.CandidateId
+	dirty = true
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 
 	return &proto.RequestVoteResponse{
@@ -68,6 +78,14 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	req *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
+	// save before the reply leaves whenever the term or log changed
+	dirty := false
+	defer func() {
+		if dirty {
+			r.persist()
+		}
+	}()
 
 	no := &proto.AppendEntriesResponse{Term: r.currentTerm, Success: false}
 
@@ -114,6 +132,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		r.currentTerm = req.Term
 		r.state = Follower
 		r.votedFor = nil
+		dirty = true
 	}
 
 	// if log and term is the same, then all entry store the same command
@@ -131,6 +150,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		}
 
 		r.logs = append(r.logs, req.Entries[i:]...)
+		dirty = true
 		break
 	}
 

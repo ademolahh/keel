@@ -39,10 +39,11 @@ func (s RaftState) String() string {
 }
 
 type Raft struct {
-	//
+	id uint64
+
+	// persistent
 	currentTerm uint64
 	votedFor    *uint64
-	id          uint64
 	logs        []*proto.LogEntry
 
 	commitIndex uint64
@@ -66,6 +67,7 @@ type Raft struct {
 	mu       sync.Mutex
 
 	stateMachine StateMachine
+	persister    Persister
 
 	proto.UnimplementedRaftServer
 }
@@ -75,7 +77,7 @@ type peer struct {
 	client proto.RaftClient
 }
 
-func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine) *Raft {
+func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, persister Persister) (*Raft, error) {
 	var peers []peer
 
 	for pid, addr := range peerClient {
@@ -93,7 +95,7 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine) *Ra
 		peers = append(peers, peer{id: pid, client: client})
 	}
 
-	return &Raft{
+	r := &Raft{
 		id:               id,
 		peers:            peers,
 		state:            Follower,
@@ -103,7 +105,14 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine) *Ra
 		matchIndex:       make(map[uint64]uint64),
 		done:             make(chan struct{}),
 		stateMachine:     stateMachine,
+		persister:        persister,
 		electionDeadline: time.Now().Add(randomElectionTimeout())}
+
+	if err := r.readPersist(); err != nil {
+		return nil, err
+	}
+
+	return r, nil
 }
 
 func (r *Raft) Kill() {
@@ -142,6 +151,7 @@ func (r *Raft) StartElection() {
 	id := r.id
 
 	r.votedFor = &id
+	r.persist()
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 	votes := 1
 
@@ -184,6 +194,7 @@ func (r *Raft) StartElection() {
 				r.state = Follower
 				r.votedFor = nil
 				r.leaderId = 0
+				r.persist()
 			}
 
 			if r.state != Candidate || r.currentTerm != term {
@@ -231,6 +242,7 @@ func (r *Raft) Leader() (uint64, bool) {
 func (r *Raft) Append(cmd string) bool {
 	r.mu.Lock()
 	r.logs = append(r.logs, &proto.LogEntry{Term: r.currentTerm, Cmd: cmd})
+	r.persist()
 	peers := append([]peer(nil), r.peers...)
 	r.mu.Unlock()
 
@@ -340,6 +352,7 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 			r.currentTerm = res.Term
 			r.votedFor = nil
 			r.leaderId = 0
+			r.persist()
 			r.mu.Unlock()
 			return
 		}
