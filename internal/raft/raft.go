@@ -309,6 +309,7 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 		}
 
 		r.mu.Lock()
+		currentTerm := r.currentTerm
 		prevLogIndex := max(r.nextIndex[p.id], 1) - 1
 
 		var prevLogTerm uint64
@@ -333,15 +334,23 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 			continue
 		}
 
+		r.mu.Lock()
+		if res.Term > currentTerm {
+			r.state = Follower
+			r.currentTerm = res.Term
+			r.votedFor = nil
+			r.leaderId = 0
+			r.mu.Unlock()
+			return
+		}
+
 		if res.Hint != nil {
-			r.mu.Lock()
 			r.nextIndex[p.id] = *res.Hint + 1
 			r.mu.Unlock()
 			continue
 		}
 
 		if res.Success {
-			r.mu.Lock()
 			sentIndex := req.PrevLogIndex + uint64(len(req.Entries))
 			r.nextIndex[p.id] = sentIndex + 1
 			r.matchIndex[p.id] = sentIndex
@@ -361,6 +370,7 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 			r.mu.Unlock()
 			return
 		}
+		r.mu.Unlock()
 	}
 }
 
