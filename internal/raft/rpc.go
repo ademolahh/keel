@@ -110,16 +110,6 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		}
 	}
 
-	newIndex := req.PrevLogIndex + 1
-
-	if len(req.Entries) > 0 && followerLogIndex >= newIndex {
-		nextEntry := r.logs[newIndex-1]
-
-		if nextEntry.Term != req.Entries[0].Term {
-			r.logs = r.logs[:newIndex-1]
-		}
-	}
-
 	if req.Term > r.currentTerm {
 		r.currentTerm = req.Term
 		r.state = Follower
@@ -128,9 +118,19 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	// if log and term is the same, then all entry store the same command
 	// if log and term is the same, the logs are identical in all preceeding entries
 
-	// replicated it
-	if len(req.Entries) > 0 {
-		r.logs = append(r.logs[:newIndex-1], req.Entries...)
+	for i, entry := range req.Entries {
+		index := req.PrevLogIndex + uint64(i) + 1
+
+		if index <= uint64(len(r.logs)) {
+			if r.logs[index-1].Term == entry.Term {
+				continue
+			}
+
+			r.logs = r.logs[:index-1]
+		}
+
+		r.logs = append(r.logs, req.Entries[i:]...)
+		break
 	}
 
 	if req.LeaderCommit > r.commitIndex {
