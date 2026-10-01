@@ -6,10 +6,10 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -o /raftkv ./cmd/kv
+RUN CGO_ENABLED=0 go build -o /keel ./cmd/kv
 
 FROM alpine:3.23
 
-COPY --from=build /raftkv /raftkv
+COPY --from=build /keel /keel
 
-ENTRYPOINT ["/raftkv"]
+ENTRYPOINT ["/keel"]

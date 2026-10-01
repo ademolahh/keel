@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ademolahh/raftkv/proto"
+	"github.com/ademolahh/keel/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )

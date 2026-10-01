@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ademolahh/raftkv/internal/kv"
-	"github.com/ademolahh/raftkv/proto"
+	"github.com/ademolahh/keel/internal/kv"
+	"github.com/ademolahh/keel/proto"
 	"google.golang.org/grpc"
 )
 

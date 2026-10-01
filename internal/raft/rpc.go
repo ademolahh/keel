@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/ademolahh/raftkv/proto"
+	"github.com/ademolahh/keel/proto"
 )
 
 func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (*proto.RequestVoteResponse, error) {

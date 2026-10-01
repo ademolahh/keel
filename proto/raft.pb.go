@@ -514,7 +514,7 @@ const file_proto_raft_proto_rawDesc = "" +
 	"\x04Raft\x128\n" +
 	"\vRequestVote\x12\x13.RequestVoteRequest\x1a\x14.RequestVoteResponse\x12>\n" +
 	"\rAppendEntries\x12\x15.AppendEntriesRequest\x1a\x16.AppendEntriesResponse\x12D\n" +
-	"\x0fInstallSnapshot\x12\x17.InstallSnapshotRequest\x1a\x18.InstallSnapshotResponseB#Z!github.com/ademolahh/raftkv/protob\x06proto3"
+	"\x0fInstallSnapshot\x12\x17.InstallSnapshotRequest\x1a\x18.InstallSnapshotResponseB!Z\x1fgithub.com/ademolahh/keel/protob\x06proto3"
 
 var (
 	file_proto_raft_proto_rawDescOnce sync.Once

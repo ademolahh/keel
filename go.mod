@@ -1,4 +1,4 @@
-module github.com/ademolahh/raftkv
+module github.com/ademolahh/keel
 
 go 1.26.5
 

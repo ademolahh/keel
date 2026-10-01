@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/ademolahh/raftkv/internal/kv"
-	"github.com/ademolahh/raftkv/internal/raft"
+	"github.com/ademolahh/keel/internal/kv"
+	"github.com/ademolahh/keel/internal/raft"
 )
 
 type RaftHandler struct {

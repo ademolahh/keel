@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"github.com/ademolahh/raftkv/internal/server"
+	"github.com/ademolahh/keel/internal/server"
 )
 
 func main() {
