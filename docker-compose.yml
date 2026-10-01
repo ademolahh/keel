@@ -1,0 +1,54 @@
+x-raft: &raft
+  build: .
+  restart: always
+
+x-env: &env
+  PORT: "7000"
+  HTTP_PORT: ":8080"
+  PEERS: "1=raft-1:7000,2=raft-2:7000,3=raft-3:7000,4=raft-4:7000,5=raft-5:7000"
+  HTTP_PEERS: "1=localhost:8081,2=localhost:8082,3=localhost:8083,4=localhost:8084,5=localhost:8085"
+
+services:
+  raft-1:
+    <<: *raft
+    environment:
+      <<: *env
+      ID: "1"
+    ports:
+      - "8081:8080"
+
+  raft-2:
+    <<: *raft
+    environment:
+      <<: *env
+      ID: "2"
+    ports:
+      - "8082:8080"
+
+  raft-3:
+    <<: *raft
+    environment:
+      <<: *env
+      ID: "3"
+    ports:
+      - "8083:8080"
+
+  raft-4:
+    <<: *raft
+    environment:
+      <<: *env
+      ID: "4"
+    ports:
+      - "8084:8080"
+
+  raft-5:
+    <<: *raft
+    environment:
+      <<: *env
+      ID: "5"
+    ports:
+      - "8085:8080"
+
+networks:
+  default:
+    name: raft-network
