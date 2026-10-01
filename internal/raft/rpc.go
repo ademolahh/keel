@@ -142,6 +142,10 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	return &proto.AppendEntriesResponse{Term: r.currentTerm, Success: true}, nil
 }
 
+func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRequest) (*proto.InstallSnapshotResponse, error) {
+	panic("")
+}
+
 func getMatchingTermIndex(logs []*proto.LogEntry, term uint64, prevLogIndex int) *uint64 {
 	if prevLogIndex > len(logs) {
 		prevLogIndex = len(logs)
