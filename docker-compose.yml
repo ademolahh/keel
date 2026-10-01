@@ -5,12 +5,15 @@ x-raft: &raft
 x-env: &env
   PORT: "7000"
   HTTP_PORT: ":8080"
+  DATA_DIR: "/data"
   PEERS: "1=raft-1:7000,2=raft-2:7000,3=raft-3:7000,4=raft-4:7000,5=raft-5:7000"
   HTTP_PEERS: "1=localhost:8081,2=localhost:8082,3=localhost:8083,4=localhost:8084,5=localhost:8085"
 
 services:
   raft-1:
     <<: *raft
+    volumes:
+      - raft-one-data:/data
     environment:
       <<: *env
       ID: "1"
@@ -19,6 +22,8 @@ services:
 
   raft-2:
     <<: *raft
+    volumes:
+      - raft-two-data:/data
     environment:
       <<: *env
       ID: "2"
@@ -27,6 +32,8 @@ services:
 
   raft-3:
     <<: *raft
+    volumes:
+      - raft-three-data:/data
     environment:
       <<: *env
       ID: "3"
@@ -35,6 +42,8 @@ services:
 
   raft-4:
     <<: *raft
+    volumes:
+      - raft-four-data:/data
     environment:
       <<: *env
       ID: "4"
@@ -43,11 +52,20 @@ services:
 
   raft-5:
     <<: *raft
+    volumes:
+      - raft-five-data:/data
     environment:
       <<: *env
       ID: "5"
     ports:
       - "8085:8080"
+
+volumes:
+  raft-one-data:
+  raft-two-data:
+  raft-three-data:
+  raft-four-data:
+  raft-five-data:
 
 networks:
   default:
