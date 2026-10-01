@@ -112,6 +112,7 @@ func (r *Raft) Kill() {
 
 func (r *Raft) RunElectionTimer() {
 	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
 	for range ticker.C {
 		select {
@@ -274,6 +275,7 @@ func (r *Raft) HeartBeat() {
 
 func (r *Raft) Apply() {
 	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
 
 	for {
 		select {
@@ -282,12 +284,19 @@ func (r *Raft) Apply() {
 		case <-ticker.C:
 		}
 
-		if r.commitIndex > r.lastApplied {
-			r.lastApplied = r.lastApplied + 1
+		r.mu.Lock()
 
-			cmd := r.logs[r.lastApplied-1].Cmd
-			r.stateMachine.Apply(cmd)
+		if r.commitIndex <= r.lastApplied {
+			r.mu.Unlock()
+			continue
 		}
+
+		r.lastApplied = r.lastApplied + 1
+		cmd := r.logs[r.lastApplied-1].Cmd // where lastApplied = r.lastApplied-1
+		r.mu.Unlock()
+
+		r.stateMachine.Apply(cmd)
+
 	}
 }
 
