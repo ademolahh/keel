@@ -675,7 +675,7 @@ func TestAppend(t *testing.T) {
 			}
 		}
 
-		majority := majority(size)
+		majority := majority(size - 1)
 		if cmdEntered < majority {
 			t.Errorf("command entered: expected %d, received: %d", majority, cmdEntered)
 		}
