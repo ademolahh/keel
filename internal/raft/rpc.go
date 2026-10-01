@@ -23,6 +23,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 		r.currentTerm = req.Term
 		r.votedFor = nil
 		r.state = Follower
+		r.leaderId = 0
 	}
 
 	lastLogIndex := len(r.logs)
@@ -73,6 +74,9 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	if req.Term < r.currentTerm {
 		return no, nil
 	}
+
+	// only the leader of a term at least as new as ours sends this
+	r.leaderId = req.LeaderId
 
 	followerLogIndex := uint64(len(r.logs))
 	if req.PrevLogIndex != 0 {

@@ -54,6 +54,10 @@ type Raft struct {
 	peers []peer
 	state RaftState
 
+	// leaderId is the leader this node last heard from in its current term,
+	// or 0 when it does not know one.
+	leaderId uint64
+
 	electionDeadline time.Time
 	voteTimeout      time.Duration
 
@@ -133,6 +137,7 @@ func (r *Raft) StartElection() {
 	r.currentTerm += 1
 	term := r.currentTerm
 	r.state = Candidate
+	r.leaderId = 0
 	id := r.id
 
 	r.votedFor = &id
@@ -168,6 +173,7 @@ func (r *Raft) StartElection() {
 				r.currentTerm = res.Term
 				r.state = Follower
 				r.votedFor = nil
+				r.leaderId = 0
 			}
 
 			if r.state != Candidate || r.currentTerm != term {
@@ -178,6 +184,7 @@ func (r *Raft) StartElection() {
 				votes += 1
 				if votes >= majority {
 					r.state = Leader
+					r.leaderId = r.id
 
 					for _, p := range r.peers {
 						r.nextIndex[p.id] = uint64(len(r.logs)) + 1
@@ -195,6 +202,20 @@ func (r *Raft) StartElection() {
 			}
 		}(peer.client)
 	}
+}
+
+func (r *Raft) IsLeader() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.state == Leader
+}
+
+func (r *Raft) Leader() (uint64, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.leaderId, r.leaderId != 0
 }
 
 func (r *Raft) Append(cmd string) bool {
