@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -434,6 +435,22 @@ func TestStartElection(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("wins when every node already holds entries", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+
+		for _, n := range nodes {
+			n.raft.mu.Lock()
+			n.raft.logs = makeLogs()
+			n.raft.currentTerm = 3
+			n.raft.mu.Unlock()
+		}
+
+		raft := nodes[DEFAULT_LEADER_ID].raft
+		raft.StartElection()
+
+		waitForLeader(t, raft, raft.voteTimeout)
+	})
 }
 
 func TestRunElectionTimer(t *testing.T) {
@@ -570,6 +587,28 @@ func TestAppendEntries(t *testing.T) {
 			t.Errorf("log size: expected 3, got %d", len(raft.logs))
 		}
 
+	})
+
+	t.Run("keeps entries it already holds", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()
+
+		res, err := raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, PrevLogIndex: 2, PrevLogTerm: 1, Entries: makeLogs()[2:4],
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !res.Success {
+			t.Error("expected append to succeed")
+		}
+
+		if len(raft.logs) != 5 {
+			t.Errorf("log size: expected 5, got %d", len(raft.logs))
+		}
 	})
 }
 
@@ -736,6 +775,124 @@ func TestHeartBeat(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("steps down when a follower reports a higher term", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.state = Leader
+		leader.currentTerm = 1
+		leader.initNextIndex()
+		leader.initMatchIndex()
+
+		for id, n := range nodes {
+			if id == DEFAULT_LEADER_ID {
+				continue
+			}
+
+			n.raft.mu.Lock()
+			n.raft.currentTerm = 5
+			n.raft.mu.Unlock()
+		}
+
+		leader.HeartBeat()
+
+		waitForState(t, leader, time.Second, Follower)
+
+		if _, term, _ := snapshot(leader); term != 5 {
+			t.Errorf("term: expected 5, got %d", term)
+		}
+	})
+}
+
+func TestLeader(t *testing.T) {
+	t.Run("knows no leader before hearing from one", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+
+		if id, ok := raft.Leader(); ok {
+			t.Errorf("leader: expected none, got %d", id)
+		}
+
+		if raft.IsLeader() {
+			t.Error("is leader: expected false, got true")
+		}
+	})
+
+	t.Run("learns the leader from AppendEntries", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+
+		raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{Term: 1, LeaderId: 3})
+
+		if id, ok := raft.Leader(); !ok || id != 3 {
+			t.Errorf("leader: expected 3, got %d (known %t)", id, ok)
+		}
+	})
+
+	t.Run("forgets the leader when an election starts", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.leaderId = 3
+
+		raft.StartElection()
+
+		if id, ok := raft.Leader(); ok {
+			t.Errorf("leader: expected none, got %d", id)
+		}
+	})
+
+	t.Run("reports itself as leader after winning", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		raft := nodes[DEFAULT_LEADER_ID].raft
+
+		raft.StartElection()
+		waitForLeader(t, raft, raft.voteTimeout)
+
+		if !raft.IsLeader() {
+			t.Error("is leader: expected true, got false")
+		}
+
+		if id, ok := raft.Leader(); !ok || id != DEFAULT_LEADER_ID {
+			t.Errorf("leader: expected %d, got %d (known %t)", DEFAULT_LEADER_ID, id, ok)
+		}
+	})
+}
+
+func TestApply(t *testing.T) {
+	t.Run("applies committed entries in log order", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		sm := &recorder{}
+		raft.stateMachine = sm
+		raft.logs = makeLogs()
+		raft.commitIndex = 3
+
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
+
+		want := []string{"set a=1", "set b=2", "set c=3"}
+
+		waitFor(t, time.Second, func() bool { return len(sm.applied()) >= len(want) })
+
+		// give Apply the chance to wrongly run past the commit index
+		time.Sleep(50 * time.Millisecond)
+
+		if got := sm.applied(); !slices.Equal(got, want) {
+			t.Errorf("applied: expected %v, got %v", want, got)
+		}
+	})
+}
+
+func TestMajority(t *testing.T) {
+	// majority takes the number of peers, which excludes this node
+
+	t.Run("needs three of four nodes", func(t *testing.T) {
+		if got := majority(3); got != 3 {
+			t.Errorf("majority: expected 3, got %d", got)
+		}
+	})
+
+	t.Run("needs three of five nodes", func(t *testing.T) {
+		if got := majority(4); got != 3 {
+			t.Errorf("majority: expected 3, got %d", got)
+		}
+	})
 }
 
 func TestGetMatchingTermIndex(t *testing.T) {
@@ -816,6 +973,27 @@ func TestRaftState(t *testing.T) {
 }
 
 // HELPERS
+// recorder is a state machine that remembers the commands applied to it.
+type recorder struct {
+	mu   sync.Mutex
+	cmds []string
+}
+
+func (s *recorder) Apply(cmd string) any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.cmds = append(s.cmds, cmd)
+	return nil
+}
+
+func (s *recorder) applied() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]string(nil), s.cmds...)
+}
+
 func uint64Ptr(v uint64) *uint64 {
 	return new(v)
 }
