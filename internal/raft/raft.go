@@ -145,12 +145,21 @@ func (r *Raft) StartElection() {
 	votes := 1
 
 	peers := append([]peer(nil), r.peers...)
+	logs := append([]*proto.LogEntry(nil), r.logs...)
+	lastLogIndex := uint64(len(logs))
+	lastLogTerm := uint64(0)
+
+	if lastLogIndex > 0 {
+		lastLogTerm = logs[len(logs)-1].Term
+	}
 
 	r.mu.Unlock()
 
 	req := &proto.RequestVoteRequest{
-		Term:        term,
-		CandidateId: id,
+		Term:         term,
+		CandidateId:  id,
+		LastLogIndex: lastLogIndex,
+		LastLogTerm:  lastLogTerm,
 	}
 
 	majority := majority(len(peers))
