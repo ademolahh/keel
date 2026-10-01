@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -910,6 +911,39 @@ func TestMajority(t *testing.T) {
 	t.Run("needs three of five nodes", func(t *testing.T) {
 		if got := majority(4); got != 3 {
 			t.Errorf("majority: expected 3, got %d", got)
+		}
+	})
+}
+
+func TestPersist(t *testing.T) {
+	t.Run("restores term, vote and log after a restart", func(t *testing.T) {
+		persister := NewFilePersister(filepath.Join(t.TempDir(), "raft.state"))
+		peers := map[uint64]string{1: "localhost:0", 2: "localhost:0"}
+
+		before, err := New(1, peers, &kv.KV{}, persister)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		before.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 3, CandidateId: 2})
+		before.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 3, LeaderId: 2, Entries: makeLogs()[:2]})
+
+		after, err := New(1, peers, &kv.KV{}, persister)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if after.currentTerm != 3 {
+			t.Errorf("term: expected 3, got %d", after.currentTerm)
+		}
+
+		if after.votedFor == nil || *after.votedFor != 2 {
+			t.Errorf("voted for: expected 2, got %v", after.votedFor)
+		}
+
+		if len(after.logs) != 2 {
+			t.Errorf("log size: expected 2, got %d", len(after.logs))
 		}
 	})
 }
