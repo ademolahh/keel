@@ -390,7 +390,7 @@ func match(matchIndex map[uint64]uint64, leader uint64) []uint64 {
 }
 
 func majority(size int) int {
-	return (size / 2) + 1
+	return ((size + 1) / 2) + 1
 }
 
 func randomElectionTimeout() time.Duration {
