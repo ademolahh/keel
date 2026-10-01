@@ -55,6 +55,25 @@ func TestGetState(t *testing.T) {
 }
 
 func TestRequestVote(t *testing.T) {
+	t.Run("grants a vote after a heartbeat brings a newer term", func(t *testing.T) {
+		raft, _ := newRaft(t, 3, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 1
+		raft.votedFor = uint64Ptr(1)
+
+		raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{Term: 2, LeaderId: 5})
+
+		res, err := raft.RequestVote(context.Background(),
+			&proto.RequestVoteRequest{Term: 2, CandidateId: 5})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !res.VoteGranted {
+			t.Error("vote granted: expected true, got false")
+		}
+	})
+
 	t.Run("rejects a candidate whose term is behind", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
@@ -430,8 +449,8 @@ func TestStartElection(t *testing.T) {
 
 			if !ok {
 				_, term, votedFor := snapshot(r)
-				t.Errorf("server %d: expected term %d and vote for 5, got term %d, votedFor %d",
-					r.id, secondTerm, term, *votedFor)
+				t.Errorf("server %d: expected term %d and vote for 5, got term %d, votedFor %v",
+					r.id, secondTerm, term, votedFor)
 			}
 		}
 	})
