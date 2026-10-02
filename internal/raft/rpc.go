@@ -95,6 +95,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 
 	// only the leader of a term at least as new as ours sends this
 	r.leaderId = req.LeaderId
+	r.state = Follower
 
 	followerLogIndex := uint64(len(r.logs))
 	if req.PrevLogIndex != 0 {
@@ -130,7 +131,6 @@ func (r *Raft) AppendEntries(ctx context.Context,
 
 	if req.Term > r.currentTerm {
 		r.currentTerm = req.Term
-		r.state = Follower
 		r.votedFor = nil
 		dirty = true
 	}
