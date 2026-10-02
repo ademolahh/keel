@@ -2,7 +2,7 @@ package server
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -32,13 +32,17 @@ func Serve() error {
 	port := os.Getenv("PORT")
 	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		log.Fatal("")
+		return fmt.Errorf("listen on %s: %w", port, err)
 	}
 
 	server := grpc.NewServer()
 	proto.RegisterRaftServer(server, raft)
 
-	go server.Serve(listener)
+	go func() {
+		if err := server.Serve(listener); err != nil {
+			slog.Error("grpc server stopped", "err", err)
+		}
+	}()
 	go raft.RunElectionTimer()
 	go raft.Apply()
 
@@ -70,6 +74,8 @@ func Serve() error {
 		Addr:    httpPort,
 		Handler: mux,
 	}
+
+	slog.Info("serving", "node", id, "grpc_port", port, "http_addr", httpPort)
 
 	return s.ListenAndServe()
 }

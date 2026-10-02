@@ -33,6 +33,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 		r.state = Follower
 		r.leaderId = 0
 		dirty = true
+		r.log.Debug("adopted newer term", "term", req.Term, "from", "vote request")
 	}
 
 	lastLogIndex := len(r.logs)
@@ -66,6 +67,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 
 	r.votedFor = &req.CandidateId
 	dirty = true
+	r.log.Debug("granted vote", "candidate", req.CandidateId, "term", r.currentTerm)
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 
 	return &proto.RequestVoteResponse{
@@ -102,6 +104,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		// leader - {term: 1, index: 1} {term: 2, index: 2} {term: 3, index: 3}
 		// follower - {term: 1, index: 1} {term: 2, index: 2}
 		if req.PrevLogIndex > followerLogIndex {
+			r.log.Debug("rejected append", "reason", "missing entry", "prev_log_index", req.PrevLogIndex)
 			return &proto.AppendEntriesResponse{
 				Term:    r.currentTerm,
 				Success: false,
@@ -116,6 +119,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		// leader - {term: 1, index: 1} {term: 2, index: 2} {term: 2, index: 3}
 		// follower - {term: 1, index: 1} {term: 2, index: 2} {term: 3, index: 3} {term: 3, index: 4}
 		if r.logs[req.PrevLogIndex-1].Term != req.PrevLogTerm {
+			r.log.Debug("rejected append", "reason", "term mismatch", "prev_log_index", req.PrevLogIndex)
 			index := getMatchingTermIndex(r.logs, req.PrevLogTerm, int(req.PrevLogIndex))
 			if index == nil {
 				index = new(uint64(0))
@@ -133,6 +137,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		r.currentTerm = req.Term
 		r.votedFor = nil
 		dirty = true
+		r.log.Debug("adopted newer term", "term", req.Term, "from", "append entries")
 	}
 
 	// if log and term is the same, then all entry store the same command

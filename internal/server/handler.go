@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 
 	"github.com/ademolahh/keel/internal/kv"
@@ -29,11 +30,13 @@ func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
 		id, ok := h.raft.Leader()
 		addr, known := h.peers[id]
 		if !ok || !known {
+			slog.Debug("no leader to redirect to", "path", r.URL.Path)
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "no leader elected yet", http.StatusServiceUnavailable)
 			return
 		}
 
+		slog.Debug("redirecting to leader", "leader", id, "path", r.URL.Path)
 		http.Redirect(w, r, "http://"+addr+r.URL.RequestURI(), http.StatusTemporaryRedirect)
 	}
 }
@@ -70,6 +73,7 @@ func (h *RaftHandler) Set(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.raft.Append(string(data)) {
+		slog.Warn("write not committed", "op", "set", "key", cmd.Key)
 		http.Error(w, "set was not committed", http.StatusServiceUnavailable)
 		return
 	}
@@ -94,6 +98,7 @@ func (h *RaftHandler) Delete(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !h.raft.Append(string(data)) {
+		slog.Warn("write not committed", "op", "delete", "key", cmd.Key)
 		http.Error(w, "delete was not committed", http.StatusServiceUnavailable)
 		return
 	}

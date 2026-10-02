@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"log/slog"
 	"math/rand"
 	"slices"
 	"sync"
@@ -68,6 +69,7 @@ type Raft struct {
 
 	stateMachine StateMachine
 	persister    Persister
+	log          *slog.Logger
 
 	proto.UnimplementedRaftServer
 }
@@ -106,11 +108,14 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 		done:             make(chan struct{}),
 		stateMachine:     stateMachine,
 		persister:        persister,
+		log:              slog.Default().With("node", id),
 		electionDeadline: time.Now().Add(randomElectionTimeout())}
 
 	if err := r.readPersist(); err != nil {
 		return nil, err
 	}
+
+	r.log.Info("node ready", "term", r.currentTerm, "log_length", len(r.logs))
 
 	return r, nil
 }
@@ -152,6 +157,7 @@ func (r *Raft) StartElection() {
 
 	r.votedFor = &id
 	r.persist()
+	r.log.Info("starting election", "term", term)
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 	votes := 1
 
@@ -195,6 +201,7 @@ func (r *Raft) StartElection() {
 				r.votedFor = nil
 				r.leaderId = 0
 				r.persist()
+				r.log.Info("stepping down", "term", res.Term, "reason", "higher term in vote reply")
 			}
 
 			if r.state != Candidate || r.currentTerm != term {
@@ -206,6 +213,7 @@ func (r *Raft) StartElection() {
 				if votes >= majority {
 					r.state = Leader
 					r.leaderId = r.id
+					r.log.Info("became leader", "term", term)
 
 					for _, p := range r.peers {
 						r.nextIndex[p.id] = uint64(len(r.logs)) + 1
@@ -304,7 +312,8 @@ func (r *Raft) Apply() {
 		}
 
 		r.lastApplied = r.lastApplied + 1
-		cmd := r.logs[r.lastApplied-1].Cmd // where lastApplied = r.lastApplied-1
+		r.log.Debug("applied", "index", r.lastApplied)
+		cmd := r.logs[r.lastApplied-1].Cmd
 		r.mu.Unlock()
 
 		r.stateMachine.Apply(cmd)
@@ -353,12 +362,14 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 			r.votedFor = nil
 			r.leaderId = 0
 			r.persist()
+			r.log.Info("stepping down", "term", res.Term, "reason", "higher term in append reply")
 			r.mu.Unlock()
 			return
 		}
 
 		if res.Hint != nil {
 			r.nextIndex[p.id] = *res.Hint + 1
+			r.log.Debug("backing off", "peer", p.id, "next_index", *res.Hint+1)
 			r.mu.Unlock()
 			continue
 		}
@@ -372,6 +383,7 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 
 			if n > r.commitIndex && r.logs[n-1].Term == r.currentTerm {
 				r.commitIndex = n
+				r.log.Debug("committed", "index", n)
 
 				if committed != nil {
 					select {
