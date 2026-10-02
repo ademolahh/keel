@@ -389,6 +389,8 @@ func TestAppendEntries(t *testing.T) {
 	})
 }
 
+func TestInstallSnapshot(t *testing.T) {}
+
 func TestGetMatchingTermIndex(t *testing.T) {
 	// makeLogs holds terms 1, 1, 2, 3, 3 at positions 1 to 5
 
