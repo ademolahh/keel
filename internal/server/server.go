@@ -8,9 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
@@ -41,57 +39,17 @@ func Serve() error {
 	}
 
 	grpcPort := os.Getenv("PORT")
-	grpcListener, err := net.Listen("tcp", ":"+grpcPort)
+	grpcServer, err := startGRPC(grpcPort, raft)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", grpcPort, err)
+		return err
 	}
 
-	grpcServer := grpc.NewServer()
-	proto.RegisterRaftServer(grpcServer, raft)
-
-	go func() {
-		if err := grpcServer.Serve(grpcListener); err != nil {
-			slog.Error("grpc server stopped", "err", err)
-		}
-	}()
 	go raft.RunElectionTimer()
 	go raft.Apply()
-
-	stopHeartbeat := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(30 * time.Millisecond)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-stopHeartbeat:
-				return
-			case <-ticker.C:
-				raft.HeartBeat()
-			}
-		}
-	}()
+	go raft.RunHeartbeat()
 
 	httpPort := os.Getenv("HTTP_PORT")
-
-	mux := http.NewServeMux()
-	raftHandler := New(raft, kv, httpPeers)
-
-	mux.HandleFunc("/set", raftHandler.LeaderOnly(raftHandler.Set))
-	mux.HandleFunc("/delete", raftHandler.LeaderOnly(raftHandler.Delete))
-	mux.HandleFunc("/get", raftHandler.Get)
-	mux.HandleFunc("/leader", raftHandler.Leader)
-	mux.HandleFunc("/state", raftHandler.State)
-
-	httpServer := &http.Server{
-		Addr:    httpPort,
-		Handler: mux,
-	}
-
-	httpErr := make(chan error, 1)
-	go func() {
-		httpErr <- httpServer.ListenAndServe()
-	}()
+	httpServer, httpErr := startHTTP(httpPort, New(raft, kv, httpPeers))
 
 	slog.Info("serving", "node", id, "grpc_port", grpcPort, "http_addr", httpPort)
 
@@ -102,58 +60,53 @@ func Serve() error {
 		slog.Info("shutting down", "node", id)
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if err := httpServer.Shutdown(shutdownCtx); err != nil {
-		slog.Error("http shutdown", "err", err)
-	}
-
-	close(stopHeartbeat)
-	raft.Kill()
-	grpcServer.GracefulStop()
+	shutdown(httpServer, raft, grpcServer)
 
 	slog.Info("stopped", "node", id)
 
 	return err
 }
 
-func newRaft(id uint64, sm raft.StateMachine) (*raft.Raft, error) {
-	peers, err := parsePeers(os.Getenv("PEERS"))
+func startGRPC(port string, r *raft.Raft) (*grpc.Server, error) {
+	listener, err := net.Listen("tcp", ":"+port)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("listen on %s: %w", port, err)
 	}
 
-	if _, ok := peers[id]; !ok {
-		return nil, fmt.Errorf("id %d is not in PEERS", id)
-	}
+	server := grpc.NewServer()
+	proto.RegisterRaftServer(server, r)
 
-	dir := os.Getenv("DATA_DIR")
-	if dir == "" {
-		dir = "."
-	}
+	go func() {
+		if err := server.Serve(listener); err != nil {
+			slog.Error("grpc server stopped", "err", err)
+		}
+	}()
 
-	persister := raft.NewFilePersister(filepath.Join(dir, fmt.Sprintf("raft-%d.state", id)))
-
-	return raft.New(id, peers, sm, persister)
+	return server, nil
 }
 
-func parsePeers(s string) (map[uint64]string, error) {
-	peers := make(map[uint64]string)
-
-	for pair := range strings.SplitSeq(s, ",") {
-		idStr, addr, ok := strings.Cut(pair, "=")
-		if !ok {
-			return nil, fmt.Errorf("peer %q: expected id=address", pair)
-		}
-
-		id, err := strconv.ParseUint(idStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("peer %q: %w", pair, err)
-		}
-
-		peers[id] = addr
+func startHTTP(addr string, h *RaftHandler) (*http.Server, <-chan error) {
+	server := &http.Server{
+		Addr:    addr,
+		Handler: routes(h),
 	}
 
-	return peers, nil
+	errs := make(chan error, 1)
+	go func() {
+		errs <- server.ListenAndServe()
+	}()
+
+	return server, errs
+}
+
+func shutdown(httpServer *http.Server, r *raft.Raft, grpcServer *grpc.Server) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := httpServer.Shutdown(ctx); err != nil {
+		slog.Error("http shutdown", "err", err)
+	}
+
+	r.Kill()
+	grpcServer.GracefulStop()
 }

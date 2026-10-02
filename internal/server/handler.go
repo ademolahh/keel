@@ -20,6 +20,18 @@ func New(raft *raft.Raft, store *kv.KV, peers map[uint64]string) *RaftHandler {
 	return &RaftHandler{raft: raft, store: store, peers: peers}
 }
 
+func routes(h *RaftHandler) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/set", h.LeaderOnly(h.Set))
+	mux.HandleFunc("/delete", h.LeaderOnly(h.Delete))
+	mux.HandleFunc("/get", h.Get)
+	mux.HandleFunc("/leader", h.Leader)
+	mux.HandleFunc("/state", h.State)
+
+	return mux
+}
+
 func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.raft.IsLeader() {
