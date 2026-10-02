@@ -354,6 +354,101 @@ func TestAppend(t *testing.T) {
 			t.Error("append: expected false, got true")
 		}
 	})
+
+	t.Run("returns true when another round commits the entry", func(t *testing.T) {
+		raft, _ := newRaft(t, DEFAULT_LEADER_ID, DEFAULT_CLUSTER_SIZE)
+		raft.state = Leader
+
+		// stand in for a heartbeat committing the entry; no peer is reachable,
+		// so Append's own rounds never can
+		go waitFor(t, time.Second, func() bool {
+			raft.mu.Lock()
+			defer raft.mu.Unlock()
+
+			if len(raft.logs) == 0 {
+				return false
+			}
+
+			raft.commitIndex = uint64(len(raft.logs))
+			return true
+		})
+
+		if !raft.Append("set a=1") {
+			t.Error("append: expected true, got false")
+		}
+	})
+
+	t.Run("returns false when a later leader replaced its entry", func(t *testing.T) {
+		raft, _ := newRaft(t, DEFAULT_LEADER_ID, DEFAULT_CLUSTER_SIZE)
+		raft.state = Leader
+
+		// stand in for a newer leader overwriting the entry and committing its
+		// own at the same position
+		go waitFor(t, time.Second, func() bool {
+			raft.mu.Lock()
+			defer raft.mu.Unlock()
+
+			if len(raft.logs) == 0 {
+				return false
+			}
+
+			index := len(raft.logs)
+			raft.logs[index-1] = &proto.LogEntry{Term: raft.currentTerm + 1, Cmd: "set b=2"}
+			raft.commitIndex = uint64(index)
+			return true
+		})
+
+		if raft.Append("set a=1") {
+			t.Error("append: expected false, got true")
+		}
+	})
+}
+
+func TestReplicate(t *testing.T) {
+	t.Run("keeps a newer term when a late reply carries an older one", func(t *testing.T) {
+		const lag = 200 * time.Millisecond
+
+		nodes, _ := cluster(t, 3, map[uint64]time.Duration{2: lag})
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.state = Leader
+		leader.currentTerm = 1
+		leader.initNextIndex()
+		leader.initMatchIndex()
+
+		follower := nodes[2].raft
+		follower.mu.Lock()
+		follower.currentTerm = 2
+		follower.mu.Unlock()
+
+		var p peer
+		for _, q := range leader.peers {
+			if q.id == 2 {
+				p = q
+			}
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			leader.replicate(ctx, p)
+			close(done)
+		}()
+
+		// the request goes out at term 1 and node 2 holds its reply, which
+		// carries term 2, for lag; meanwhile the leader moves on to term 3
+		time.Sleep(lag / 4)
+		leader.mu.Lock()
+		leader.currentTerm = 3
+		leader.mu.Unlock()
+
+		<-done
+
+		if _, term, _ := snapshot(leader); term != 3 {
+			t.Errorf("term: expected 3, got %d", term)
+		}
+	})
 }
 
 func TestHeartBeat(t *testing.T) {
