@@ -355,7 +355,6 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 		}
 
 		r.mu.Lock()
-		currentTerm := r.currentTerm
 		prevLogIndex := max(r.nextIndex[p.id], 1) - 1
 
 		var prevLogTerm uint64
@@ -381,7 +380,7 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 		}
 
 		r.mu.Lock()
-		if res.Term > currentTerm {
+		if res.Term > r.currentTerm {
 			r.state = Follower
 			r.currentTerm = res.Term
 			r.votedFor = nil
