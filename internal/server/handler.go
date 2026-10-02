@@ -20,75 +20,6 @@ func New(raft *raft.Raft, store *kv.KV, peers map[uint64]string) *RaftHandler {
 	return &RaftHandler{raft: raft, store: store, peers: peers}
 }
 
-func routes(h *RaftHandler) http.Handler {
-	mux := http.NewServeMux()
-
-	mux.HandleFunc("/set", h.LeaderOnly(h.Set))
-	mux.HandleFunc("/delete", h.LeaderOnly(h.Delete))
-	mux.HandleFunc("/get", h.Get)
-	mux.HandleFunc("/leader", h.Leader)
-	mux.HandleFunc("/state", h.State)
-
-	return mux
-}
-
-func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if h.raft.IsLeader() {
-			next(w, r)
-			return
-		}
-
-		id, ok := h.raft.Leader()
-		addr, known := h.peers[id]
-		if !ok || !known {
-			slog.Debug("no leader to redirect to", "path", r.URL.Path)
-			w.Header().Set("Retry-After", "1")
-			http.Error(w, "no leader elected yet", http.StatusServiceUnavailable)
-			return
-		}
-
-		slog.Debug("redirecting to leader", "leader", id, "path", r.URL.Path)
-		http.Redirect(w, r, "http://"+addr+r.URL.RequestURI(), http.StatusTemporaryRedirect)
-	}
-}
-
-func (h *RaftHandler) Leader(w http.ResponseWriter, r *http.Request) {
-	id, ok := h.raft.Leader()
-	if !ok {
-		w.Header().Set("Retry-After", "1")
-		http.Error(w, "no leader elected yet", http.StatusServiceUnavailable)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(struct {
-		ID      uint64 `json:"id"`
-		Address string `json:"address"`
-	}{id, h.peers[id]})
-}
-
-func (h *RaftHandler) State(w http.ResponseWriter, r *http.Request) {
-	s := h.raft.Status()
-
-	type entry struct {
-		Term uint64 `json:"term"`
-		Cmd  string `json:"cmd"`
-	}
-
-	logs := make([]entry, len(s.Logs))
-	for i, l := range s.Logs {
-		logs[i] = entry{Term: l.Term, Cmd: l.Cmd}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(struct {
-		Term     uint64  `json:"term"`
-		VotedFor *uint64 `json:"voted_for"`
-		Logs     []entry `json:"logs"`
-	}{s.Term, s.VotedFor, logs})
-}
-
 func (h *RaftHandler) Set(w http.ResponseWriter, r *http.Request) {
 	var cmd kv.Cmd
 
@@ -154,4 +85,93 @@ func (h *RaftHandler) Get(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"key": key, "value": value})
+}
+
+func (h *RaftHandler) Leader(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.raft.Leader()
+	if !ok {
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "no leader elected yet", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		ID      uint64 `json:"id"`
+		Address string `json:"address"`
+	}{id, h.peers[id]})
+}
+
+func (h *RaftHandler) State(w http.ResponseWriter, r *http.Request) {
+	s := h.raft.Status()
+
+	type entry struct {
+		Term uint64 `json:"term"`
+		Cmd  string `json:"cmd"`
+	}
+
+	logs := make([]entry, len(s.Logs))
+	for i, l := range s.Logs {
+		logs[i] = entry{Term: l.Term, Cmd: l.Cmd}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(struct {
+		Term     uint64  `json:"term"`
+		VotedFor *uint64 `json:"voted_for"`
+		Logs     []entry `json:"logs"`
+	}{s.Term, s.VotedFor, logs})
+}
+
+func (h *RaftHandler) Healthz(w http.ResponseWriter, r *http.Request) {
+	w.Write([]byte("ok\n"))
+}
+
+func (h *RaftHandler) Readyz(w http.ResponseWriter, r *http.Request) {
+	if _, ok := h.raft.Leader(); !ok {
+		http.Error(w, "no leader known", http.StatusServiceUnavailable)
+		return
+	}
+
+	if !h.raft.CaughtUp() {
+		http.Error(w, "applying committed entries", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.Write([]byte("ok\n"))
+}
+
+func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.raft.IsLeader() {
+			next(w, r)
+			return
+		}
+
+		id, ok := h.raft.Leader()
+		addr, known := h.peers[id]
+		if !ok || !known {
+			slog.Debug("no leader to redirect to", "path", r.URL.Path)
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "no leader elected yet", http.StatusServiceUnavailable)
+			return
+		}
+
+		slog.Debug("redirecting to leader", "leader", id, "path", r.URL.Path)
+		http.Redirect(w, r, "http://"+addr+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+	}
+}
+
+func routes(h *RaftHandler) http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/set", h.LeaderOnly(h.Set))
+	mux.HandleFunc("/delete", h.LeaderOnly(h.Delete))
+	mux.HandleFunc("/get", h.Get)
+	mux.HandleFunc("/leader", h.Leader)
+	mux.HandleFunc("/state", h.State)
+	mux.HandleFunc("/healthz", h.Healthz)
+	mux.HandleFunc("/readyz", h.Readyz)
+
+	return mux
 }

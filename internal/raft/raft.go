@@ -279,6 +279,13 @@ func (r *Raft) Status() Status {
 	return s
 }
 
+func (r *Raft) CaughtUp() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.lastApplied >= r.commitIndex
+}
+
 func (r *Raft) Leader() (uint64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
