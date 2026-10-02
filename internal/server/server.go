@@ -69,6 +69,7 @@ func Serve() error {
 	mux.HandleFunc("/delete", raftHandler.LeaderOnly(raftHandler.Delete))
 	mux.HandleFunc("/get", raftHandler.Get)
 	mux.HandleFunc("/leader", raftHandler.Leader)
+	mux.HandleFunc("/state", raftHandler.State)
 
 	s := http.Server{
 		Addr:    httpPort,

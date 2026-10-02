@@ -240,6 +240,31 @@ func (r *Raft) IsLeader() bool {
 	return r.state == Leader
 }
 
+// Status is a snapshot of a node's persistent state.
+type Status struct {
+	Term     uint64
+	VotedFor *uint64
+	Logs     []*proto.LogEntry
+}
+
+// Status returns a copy of the node's term, its vote in that term and its
+// log, safe to read after the lock is released.
+func (r *Raft) Status() Status {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	s := Status{
+		Term: r.currentTerm,
+		Logs: append([]*proto.LogEntry(nil), r.logs...),
+	}
+
+	if r.votedFor != nil {
+		s.VotedFor = new(*r.votedFor)
+	}
+
+	return s
+}
+
 func (r *Raft) Leader() (uint64, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
