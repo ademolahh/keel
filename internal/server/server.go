@@ -1,14 +1,17 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ademolahh/keel/internal/kv"
@@ -18,7 +21,15 @@ import (
 )
 
 func Serve() error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	defer stop()
+
 	id, err := strconv.ParseUint(os.Getenv("ID"), 10, 64)
+	if err != nil {
+		return err
+	}
+
+	httpPeers, err := parsePeers(os.Getenv("HTTP_PEERS"))
 	if err != nil {
 		return err
 	}
@@ -29,40 +40,41 @@ func Serve() error {
 		return err
 	}
 
-	port := os.Getenv("PORT")
-	listener, err := net.Listen("tcp", ":"+port)
+	grpcPort := os.Getenv("PORT")
+	grpcListener, err := net.Listen("tcp", ":"+grpcPort)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", port, err)
+		return fmt.Errorf("listen on %s: %w", grpcPort, err)
 	}
 
-	server := grpc.NewServer()
-	proto.RegisterRaftServer(server, raft)
+	grpcServer := grpc.NewServer()
+	proto.RegisterRaftServer(grpcServer, raft)
 
 	go func() {
-		if err := server.Serve(listener); err != nil {
+		if err := grpcServer.Serve(grpcListener); err != nil {
 			slog.Error("grpc server stopped", "err", err)
 		}
 	}()
 	go raft.RunElectionTimer()
 	go raft.Apply()
 
+	stopHeartbeat := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(30 * time.Millisecond)
 		defer ticker.Stop()
 
-		for range ticker.C {
-			raft.HeartBeat()
+		for {
+			select {
+			case <-stopHeartbeat:
+				return
+			case <-ticker.C:
+				raft.HeartBeat()
+			}
 		}
 	}()
 
 	httpPort := os.Getenv("HTTP_PORT")
 
 	mux := http.NewServeMux()
-	httpPeers, err := parsePeers(os.Getenv("HTTP_PEERS"))
-	if err != nil {
-		return err
-	}
-
 	raftHandler := New(raft, kv, httpPeers)
 
 	mux.HandleFunc("/set", raftHandler.LeaderOnly(raftHandler.Set))
@@ -71,14 +83,39 @@ func Serve() error {
 	mux.HandleFunc("/leader", raftHandler.Leader)
 	mux.HandleFunc("/state", raftHandler.State)
 
-	s := http.Server{
+	httpServer := &http.Server{
 		Addr:    httpPort,
 		Handler: mux,
 	}
 
-	slog.Info("serving", "node", id, "grpc_port", port, "http_addr", httpPort)
+	httpErr := make(chan error, 1)
+	go func() {
+		httpErr <- httpServer.ListenAndServe()
+	}()
 
-	return s.ListenAndServe()
+	slog.Info("serving", "node", id, "grpc_port", grpcPort, "http_addr", httpPort)
+
+	select {
+	case err = <-httpErr:
+	case <-ctx.Done():
+		stop()
+		slog.Info("shutting down", "node", id)
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		slog.Error("http shutdown", "err", err)
+	}
+
+	close(stopHeartbeat)
+	raft.Kill()
+	grpcServer.GracefulStop()
+
+	slog.Info("stopped", "node", id)
+
+	return err
 }
 
 func newRaft(id uint64, sm raft.StateMachine) (*raft.Raft, error) {
