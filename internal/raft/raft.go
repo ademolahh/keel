@@ -223,7 +223,7 @@ func (r *Raft) StartElection() {
 							ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 							defer cancel()
 
-							r.replicate(ctx, p, nil)
+							r.replicate(ctx, p)
 						}()
 					}
 					return
@@ -274,28 +274,45 @@ func (r *Raft) Leader() (uint64, bool) {
 
 func (r *Raft) Append(cmd string) bool {
 	r.mu.Lock()
-	r.logs = append(r.logs, &proto.LogEntry{Term: r.currentTerm, Cmd: cmd})
+	term := r.currentTerm
+	r.logs = append(r.logs, &proto.LogEntry{Term: term, Cmd: cmd})
 	r.persist()
+	index := uint64(len(r.logs))
 	peers := append([]peer(nil), r.peers...)
 	r.mu.Unlock()
-
-	committed := make(chan bool, 1)
 
 	for _, p := range peers {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 			defer cancel()
 
-			r.replicate(ctx, p, committed)
+			r.replicate(ctx, p)
 		}()
 	}
 
-	select {
-	case <-committed:
-		return true
-	case <-time.After(2 * time.Second):
-		return false
+	timeout := time.After(2 * time.Second)
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		select {
+		case <-timeout:
+			return false
+		default:
+		}
+
+		r.mu.Lock()
+		committed := r.commitIndex >= index
+		ours := committed && r.logs[index-1].Term == term
+		r.mu.Unlock()
+
+		if committed {
+			return ours
+		}
+
 	}
+
+	return false
 }
 
 func (r *Raft) HeartBeat() {
@@ -313,9 +330,10 @@ func (r *Raft) HeartBeat() {
 			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 			defer cancel()
 
-			r.replicate(ctx, p, nil)
+			r.replicate(ctx, p)
 		}()
 	}
+
 }
 
 func (r *Raft) Apply() {
@@ -346,7 +364,7 @@ func (r *Raft) Apply() {
 	}
 }
 
-func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
+func (r *Raft) replicate(ctx context.Context, p peer) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -408,13 +426,6 @@ func (r *Raft) replicate(ctx context.Context, p peer, committed chan<- bool) {
 			if n > r.commitIndex && r.logs[n-1].Term == r.currentTerm {
 				r.commitIndex = n
 				r.log.Debug("committed", "index", n)
-
-				if committed != nil {
-					select {
-					case committed <- true:
-					default:
-					}
-				}
 			}
 			r.mu.Unlock()
 			return
