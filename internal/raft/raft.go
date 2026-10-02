@@ -147,6 +147,20 @@ func (r *Raft) RunElectionTimer() {
 	}
 }
 
+func (r *Raft) RunHeartbeat() {
+	ticker := time.NewTicker(30 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-ticker.C:
+			r.HeartBeat()
+		}
+	}
+}
+
 func (r *Raft) StartElection() {
 	r.mu.Lock()
 	r.currentTerm += 1
@@ -333,7 +347,6 @@ func (r *Raft) HeartBeat() {
 			r.replicate(ctx, p)
 		}()
 	}
-
 }
 
 func (r *Raft) Apply() {
