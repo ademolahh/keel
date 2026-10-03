@@ -95,8 +95,11 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 
 		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
 		if err != nil {
+			slog.Error("dropping peer", "node", id, "peer", pid, "addr", addr, "err", err)
 			continue
 		}
+
+		slog.Debug("peer client created", "node", id, "peer", pid, "addr", addr)
 
 		client := proto.NewRaftClient(conn)
 
@@ -209,6 +212,7 @@ func (r *Raft) StartElection() {
 
 			res, err := client.RequestVote(ctx, req)
 			if err != nil {
+				r.log.Debug("vote request failed", "peer", peer.id, "term", term, "err", err)
 				return
 			}
 
@@ -411,6 +415,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 
 		res, err := p.client.AppendEntries(ctx, req)
 		if err != nil {
+			r.log.Debug("append failed", "peer", p.id, "err", err)
 			continue
 		}
 
