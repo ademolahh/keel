@@ -1,15 +1,19 @@
-FROM golang:1.26.5-alpine3.23 AS build
+ARG GO_VERSION=1.26.5
+ARG ALPINE_VERSION=3.23
+
+FROM --platform=${BUILDPLATFORM} golang:${GO_VERSION}-alpine${ALPINE_VERSION} AS base
 
 WORKDIR /src
-
+ENV CGO_ENABLED=0
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download && go mod verify
 
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /keel ./cmd/keel
+RUN go build -trimpath -ldflags="-s -w" -o /keel ./cmd/keel
 
 FROM alpine:3.23
 
-COPY --from=build /keel /keel
+COPY --from=base /keel /keel
 
 ENTRYPOINT ["/keel"]
