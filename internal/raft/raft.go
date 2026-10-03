@@ -10,6 +10,7 @@ import (
 
 	"github.com/ademolahh/keel/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -93,7 +94,18 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 			continue
 		}
 
-		conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient("passthrough:///"+addr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithConnectParams(grpc.ConnectParams{
+				Backoff: backoff.Config{
+					BaseDelay:  50 * time.Millisecond,
+					Multiplier: 1.6,
+					Jitter:     0.2,
+					MaxDelay:   100 * time.Millisecond,
+				},
+			}),
+		)
+
 		if err != nil {
 			slog.Error("dropping peer", "node", id, "peer", pid, "addr", addr, "err", err)
 			continue
