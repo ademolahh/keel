@@ -397,6 +397,8 @@ func (r *Raft) Apply() {
 	}
 }
 
+const retryDelay = 10 * time.Millisecond
+
 func (r *Raft) replicate(ctx context.Context, p peer) {
 	for {
 		select {
@@ -428,6 +430,13 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 		res, err := p.client.AppendEntries(ctx, req)
 		if err != nil {
 			r.log.Debug("append failed", "peer", p.id, "err", err)
+
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(retryDelay):
+			}
+
 			continue
 		}
 
