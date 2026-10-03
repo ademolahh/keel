@@ -42,8 +42,8 @@ func TestNew(t *testing.T) {
 	}
 
 	duration := raft.electionDeadline.Sub(currTime)
-	if duration > 300*time.Millisecond || duration < 100*time.Millisecond {
-		t.Errorf("duration is expected to within 100-300ms, buy got %d", duration)
+	if duration > electionTimeoutMax || duration < electionTimeoutMin {
+		t.Errorf("duration: expected within %v-%v, got %v", electionTimeoutMin, electionTimeoutMax, duration)
 	}
 
 }
@@ -663,8 +663,8 @@ func TestPersist(t *testing.T) {
 
 func TestRandomElectionTimeout(t *testing.T) {
 	randomTime := randomElectionTimeout()
-	if randomTime > 300*time.Millisecond || randomTime < 100*time.Millisecond {
-		t.Errorf("duration is expected to within 100-300ms, buy got %d", randomTime)
+	if randomTime > electionTimeoutMax || randomTime < electionTimeoutMin {
+		t.Errorf("duration: expected within %v-%v, got %v", electionTimeoutMin, electionTimeoutMax, randomTime)
 	}
 }
 

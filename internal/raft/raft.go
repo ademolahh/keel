@@ -79,6 +79,12 @@ type peer struct {
 	client proto.RaftClient
 }
 
+type Status struct {
+	Term     uint64
+	VotedFor *uint64
+	Logs     []*proto.LogEntry
+}
+
 func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, persister Persister) (*Raft, error) {
 	var peers []peer
 
@@ -254,15 +260,6 @@ func (r *Raft) IsLeader() bool {
 	return r.state == Leader
 }
 
-// Status is a snapshot of a node's persistent state.
-type Status struct {
-	Term     uint64
-	VotedFor *uint64
-	Logs     []*proto.LogEntry
-}
-
-// Status returns a copy of the node's term, its vote in that term and its
-// log, safe to read after the lock is released.
 func (r *Raft) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -473,9 +470,13 @@ func majority(size int) int {
 	return ((size + 1) / 2) + 1
 }
 
-func randomElectionTimeout() time.Duration {
-	minimum, maximum := 100, 300
-	r := rand.Intn(maximum-minimum+1) + minimum
+const (
+	electionTimeoutMin = 100 * time.Millisecond
+	electionTimeoutMax = 300 * time.Millisecond
+)
 
-	return time.Duration(r) * time.Millisecond
+func randomElectionTimeout() time.Duration {
+	spread := int64(electionTimeoutMax - electionTimeoutMin)
+
+	return electionTimeoutMin + time.Duration(rand.Int63n(spread+1))
 }
