@@ -255,6 +255,7 @@ func TestAppend(t *testing.T) {
 		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		r := nodes[DEFAULT_LEADER_ID].raft
 		r.state = Leader
+		r.leaderId = r.id
 		r.initNextIndex()
 		r.initMatchIndex()
 		logSize := len(r.logs)
@@ -270,6 +271,7 @@ func TestAppend(t *testing.T) {
 		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		r := nodes[DEFAULT_LEADER_ID].raft
 		r.state = Leader
+		r.leaderId = r.id
 		r.initNextIndex()
 		r.initMatchIndex()
 		size := len(nodes)
@@ -305,6 +307,7 @@ func TestAppend(t *testing.T) {
 		const STALE_ID uint64 = 3
 		const LATEST_TERM uint64 = 3
 		nodes[DEFAULT_LEADER_ID].raft.state = Leader
+		nodes[DEFAULT_LEADER_ID].raft.leaderId = nodes[DEFAULT_LEADER_ID].raft.id
 
 		logs := makeLogs()
 
@@ -343,6 +346,7 @@ func TestAppend(t *testing.T) {
 		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		r := nodes[DEFAULT_LEADER_ID].raft
 		r.state = Leader
+		r.leaderId = r.id
 		r.initNextIndex()
 		r.initMatchIndex()
 
@@ -358,6 +362,7 @@ func TestAppend(t *testing.T) {
 	t.Run("returns true when another round commits the entry", func(t *testing.T) {
 		raft, _ := newRaft(t, DEFAULT_LEADER_ID, DEFAULT_CLUSTER_SIZE)
 		raft.state = Leader
+		raft.leaderId = raft.id
 
 		// stand in for a heartbeat committing the entry; no peer is reachable,
 		// so Append's own rounds never can
@@ -381,6 +386,7 @@ func TestAppend(t *testing.T) {
 	t.Run("returns false when a later leader replaced its entry", func(t *testing.T) {
 		raft, _ := newRaft(t, DEFAULT_LEADER_ID, DEFAULT_CLUSTER_SIZE)
 		raft.state = Leader
+		raft.leaderId = raft.id
 
 		// stand in for a newer leader overwriting the entry and committing its
 		// own at the same position
@@ -411,6 +417,7 @@ func TestReplicate(t *testing.T) {
 		nodes, _ := cluster(t, 3, map[uint64]time.Duration{2: lag})
 		leader := nodes[DEFAULT_LEADER_ID].raft
 		leader.state = Leader
+		leader.leaderId = leader.id
 		leader.currentTerm = 1
 		leader.initNextIndex()
 		leader.initMatchIndex()
@@ -449,6 +456,182 @@ func TestReplicate(t *testing.T) {
 			t.Errorf("term: expected 3, got %d", term)
 		}
 	})
+
+	t.Run("stops retrying once it loses leadership", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.state = Leader
+		leader.leaderId = leader.id
+		leader.initNextIndex()
+		leader.initMatchIndex()
+
+		// every call to node 2 fails, so replicate keeps retrying
+		nodes[2].stop()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			leader.replicate(ctx, peerOf(leader, 2))
+			close(done)
+		}()
+
+		time.Sleep(50 * time.Millisecond)
+		leader.mu.Lock()
+		leader.state = Follower
+		leader.leaderId = 0
+		leader.mu.Unlock()
+
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+			t.Error("replicate: expected to stop after losing leadership, still retrying")
+		}
+	})
+
+	t.Run("stops retrying once the term moves on", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.state = Leader
+		leader.leaderId = leader.id
+		leader.currentTerm = 1
+		leader.initNextIndex()
+		leader.initMatchIndex()
+
+		nodes[2].stop()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			leader.replicate(ctx, peerOf(leader, 2))
+			close(done)
+		}()
+
+		// still the leader, but of a later term than the one replicate began in
+		time.Sleep(50 * time.Millisecond)
+		leader.mu.Lock()
+		leader.currentTerm = 3
+		leader.mu.Unlock()
+
+		select {
+		case <-done:
+		case <-time.After(500 * time.Millisecond):
+			t.Error("replicate: expected to stop after the term changed, still retrying")
+		}
+	})
+
+	t.Run("ignores a reply that arrives after it stepped down", func(t *testing.T) {
+		const lag = 200 * time.Millisecond
+
+		nodes, _ := cluster(t, 3, map[uint64]time.Duration{2: lag})
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.state = Leader
+		leader.leaderId = leader.id
+		leader.currentTerm = 3
+		leader.logs = makeLogs()
+		leader.initMatchIndex()
+		leader.nextIndex[2] = 1
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		done := make(chan struct{})
+		go func() {
+			leader.replicate(ctx, peerOf(leader, 2))
+			close(done)
+		}()
+
+		// node 2 accepts all five entries but holds its reply for lag
+		time.Sleep(lag / 4)
+		leader.mu.Lock()
+		leader.state = Follower
+		leader.leaderId = 0
+		leader.mu.Unlock()
+
+		<-done
+
+		leader.mu.Lock()
+		match := leader.matchIndex[2]
+		leader.mu.Unlock()
+
+		if match != 0 {
+			t.Errorf("match index: expected 0, got %d", match)
+		}
+	})
+}
+
+func TestRunHeartbeat(t *testing.T) {
+	t.Run("keeps resetting a follower's election deadline", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.state = Leader
+		leader.leaderId = leader.id
+		leader.initNextIndex()
+		leader.initMatchIndex()
+
+		go leader.RunHeartbeat()
+		t.Cleanup(leader.Kill)
+
+		follower := nodes[2].raft
+
+		for i := range 2 {
+			follower.mu.Lock()
+			before := follower.electionDeadline
+			follower.mu.Unlock()
+
+			ok := waitFor(t, time.Second, func() bool {
+				follower.mu.Lock()
+				defer follower.mu.Unlock()
+
+				return !follower.electionDeadline.Equal(before)
+			})
+
+			if !ok {
+				t.Fatalf("heartbeat %d: expected election deadline to be reset", i+1)
+			}
+		}
+	})
+}
+
+func TestKill(t *testing.T) {
+	loops := []struct {
+		name string
+		run  func(*Raft)
+	}{
+		{"stops the election timer", (*Raft).RunElectionTimer},
+		{"stops the heartbeat loop", (*Raft).RunHeartbeat},
+		{"stops the apply loop", (*Raft).Apply},
+	}
+
+	for _, loop := range loops {
+		t.Run(loop.name, func(t *testing.T) {
+			raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+
+			done := make(chan struct{})
+			go func() {
+				loop.run(raft)
+				close(done)
+			}()
+
+			raft.Kill()
+
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Error("loop: expected to return after Kill, still running")
+			}
+		})
+	}
+
+	t.Run("can be called more than once", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+
+		raft.Kill()
+		raft.Kill()
+	})
 }
 
 func TestHeartBeat(t *testing.T) {
@@ -477,6 +660,7 @@ func TestHeartBeat(t *testing.T) {
 		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		leader := nodes[DEFAULT_LEADER_ID].raft
 		leader.state = Leader
+		leader.leaderId = leader.id
 		leader.initNextIndex()
 		leader.initMatchIndex()
 
@@ -513,6 +697,7 @@ func TestHeartBeat(t *testing.T) {
 		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
 		leader := nodes[DEFAULT_LEADER_ID].raft
 		leader.state = Leader
+		leader.leaderId = leader.id
 		leader.currentTerm = 1
 		leader.initNextIndex()
 		leader.initMatchIndex()
@@ -608,6 +793,83 @@ func TestApply(t *testing.T) {
 
 		if got := sm.applied(); !slices.Equal(got, want) {
 			t.Errorf("applied: expected %v, got %v", want, got)
+		}
+	})
+}
+
+func TestStatus(t *testing.T) {
+	t.Run("returns copies the caller cannot change the node through", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.votedFor = uint64Ptr(2)
+		raft.logs = makeLogs()
+
+		s := raft.Status()
+
+		if s.Term != 3 {
+			t.Errorf("term: expected 3, got %d", s.Term)
+		}
+
+		if s.VotedFor == nil || *s.VotedFor != 2 {
+			t.Errorf("voted for: expected 2, got %v", s.VotedFor)
+		}
+
+		if len(s.Logs) != 5 {
+			t.Errorf("log size: expected 5, got %d", len(s.Logs))
+		}
+
+		*s.VotedFor = 4
+		s.Logs[0] = &proto.LogEntry{Term: 9}
+
+		if *raft.votedFor != 2 {
+			t.Errorf("node's vote: expected 2, got %d", *raft.votedFor)
+		}
+
+		if raft.logs[0].Term != 1 {
+			t.Errorf("node's first entry term: expected 1, got %d", raft.logs[0].Term)
+		}
+	})
+
+	t.Run("reports no vote before the node votes", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+
+		if s := raft.Status(); s.VotedFor != nil {
+			t.Errorf("voted for: expected nil, got %d", *s.VotedFor)
+		}
+	})
+}
+
+func TestCaughtUp(t *testing.T) {
+	t.Run("is false while committed entries wait to be applied", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.logs = makeLogs()
+		raft.commitIndex = 3
+		raft.lastApplied = 1
+
+		if raft.CaughtUp() {
+			t.Error("caught up: expected false, got true")
+		}
+	})
+
+	t.Run("is true once every committed entry is applied", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.logs = makeLogs()
+		raft.commitIndex = 3
+		raft.lastApplied = 3
+
+		if !raft.CaughtUp() {
+			t.Error("caught up: expected true, got false")
+		}
+	})
+}
+
+func TestMatch(t *testing.T) {
+	t.Run("lists every index highest first, the leader's included", func(t *testing.T) {
+		got := match(map[uint64]uint64{2: 1, 3: 4, 4: 0, 5: 2}, 5)
+		want := []uint64{5, 4, 2, 1, 0}
+
+		if !slices.Equal(got, want) {
+			t.Errorf("match: expected %v, got %v", want, got)
 		}
 	})
 }
@@ -831,6 +1093,16 @@ func start(t *testing.T, raft *Raft, lis net.Listener, opt ...grpc.ServerOption)
 	}()
 
 	return stop
+}
+
+func peerOf(r *Raft, id uint64) peer {
+	for _, p := range r.peers {
+		if p.id == id {
+			return p
+		}
+	}
+
+	panic(fmt.Sprintf("node %d has no peer %d", r.id, id))
 }
 
 func snapshot(r *Raft) (RaftState, uint64, *uint64) {
