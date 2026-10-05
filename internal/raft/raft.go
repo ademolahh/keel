@@ -400,6 +400,10 @@ func (r *Raft) Apply() {
 const retryDelay = 10 * time.Millisecond
 
 func (r *Raft) replicate(ctx context.Context, p peer) {
+	r.mu.Lock()
+	term := r.currentTerm
+	r.mu.Unlock()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -408,6 +412,11 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 		}
 
 		r.mu.Lock()
+		if r.id != r.leaderId || term != r.currentTerm {
+			r.mu.Unlock()
+			return
+		}
+
 		prevLogIndex := max(r.nextIndex[p.id], 1) - 1
 
 		var prevLogTerm uint64
@@ -457,6 +466,11 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			r.log.Debug("backing off", "peer", p.id, "next_index", *res.Hint+1)
 			r.mu.Unlock()
 			continue
+		}
+
+		if r.id != r.leaderId || term != r.currentTerm {
+			r.mu.Unlock()
+			return
 		}
 
 		if res.Success {
