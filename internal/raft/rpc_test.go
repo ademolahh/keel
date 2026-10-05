@@ -387,6 +387,127 @@ func TestAppendEntries(t *testing.T) {
 			t.Errorf("log size: expected 5, got %d", len(raft.logs))
 		}
 	})
+
+	t.Run("appends new entries after prevLogIndex", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 1
+		raft.logs = makeLogs()[:2]
+
+		res, err := raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, PrevLogIndex: 2, PrevLogTerm: 1, Entries: makeLogs()[2:],
+		})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !res.Success {
+			t.Error("expected append to succeed")
+		}
+
+		if len(raft.logs) != 5 {
+			t.Fatalf("log size: expected 5, got %d", len(raft.logs))
+		}
+
+		if raft.logs[4].Cmd != "set e=5" {
+			t.Errorf("last entry: expected %q, got %q", "set e=5", raft.logs[4].Cmd)
+		}
+	})
+
+	t.Run("turns a candidate of the same term into a follower", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 2
+		raft.state = Candidate
+		raft.votedFor = uint64Ptr(1)
+
+		res, err := raft.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 2, LeaderId: 3})
+
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+
+		if !res.Success {
+			t.Error("expected append to succeed")
+		}
+
+		if raft.state != Follower {
+			t.Errorf("state: expected %s, got %s", Follower.String(), raft.state.String())
+		}
+
+		// same term, so the vote it cast for itself still stands
+		if raft.votedFor == nil || *raft.votedFor != 1 {
+			t.Errorf("voted for: expected 1, got %v", raft.votedFor)
+		}
+	})
+
+	t.Run("follows the leader's commit index", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()
+
+		raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, PrevLogIndex: 5, PrevLogTerm: 3, LeaderCommit: 3,
+		})
+
+		if raft.commitIndex != 3 {
+			t.Errorf("commit index: expected 3, got %d", raft.commitIndex)
+		}
+	})
+
+	t.Run("caps the commit index at its last entry", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 1
+		raft.logs = makeLogs()[:2]
+
+		raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 1, PrevLogIndex: 2, PrevLogTerm: 1, LeaderCommit: 5,
+		})
+
+		if raft.commitIndex != 2 {
+			t.Errorf("commit index: expected 2, got %d", raft.commitIndex)
+		}
+	})
+
+	t.Run("hints its log length when prevLogIndex is past its log", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()
+
+		res, _ := raft.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 3, PrevLogIndex: 8, PrevLogTerm: 3})
+
+		if res.Hint == nil || *res.Hint != 5 {
+			t.Errorf("hint: expected 5, got %v", res.Hint)
+		}
+	})
+
+	t.Run("hints the last position of prevLogTerm on a term mismatch", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()
+
+		// position 4 holds term 3; the last term 2 entry is at position 3
+		res, _ := raft.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 3, PrevLogIndex: 4, PrevLogTerm: 2})
+
+		if res.Hint == nil || *res.Hint != 3 {
+			t.Errorf("hint: expected 3, got %v", res.Hint)
+		}
+	})
+
+	t.Run("hints zero when it holds no entry of prevLogTerm", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 5
+		raft.logs = makeLogs()
+
+		res, _ := raft.AppendEntries(context.Background(),
+			&proto.AppendEntriesRequest{Term: 5, PrevLogIndex: 4, PrevLogTerm: 4})
+
+		if res.Hint == nil || *res.Hint != 0 {
+			t.Errorf("hint: expected 0, got %v", res.Hint)
+		}
+	})
 }
 
 func TestInstallSnapshot(t *testing.T) {}
