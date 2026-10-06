@@ -5,6 +5,9 @@ on:
     branches: [main, dev]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -32,8 +35,34 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
         with:
-          go-version: go.mod
+          go-version-file: go.mod
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13
+
+  scan:
+    needs: [test, golangci]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: build
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          load: true
+          tags: keel:scan
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: trivy
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: keel:scan
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
