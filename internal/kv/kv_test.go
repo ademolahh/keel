@@ -9,9 +9,7 @@ func TestSet(t *testing.T) {
 	t.Run("stores the value under the key", func(t *testing.T) {
 		kv := NewKV()
 
-		if err := kv.set("a", "1"); err != nil {
-			t.Fatalf("set: expected nil, got %v", err)
-		}
+		kv.set("a", "1")
 
 		if value := kv.Data["a"]; value != "1" {
 			t.Errorf("value: expected 1, got %q", value)

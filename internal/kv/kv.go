@@ -10,9 +10,8 @@ import (
 )
 
 type KV struct {
-	Data  map[string]string
-	mu    sync.RWMutex
-	apply chan string
+	Data map[string]string
+	mu   sync.RWMutex
 }
 
 type Cmd struct {
@@ -47,11 +46,10 @@ func (kv *KV) Apply(command string) any {
 	return nil
 }
 
-func (kv *KV) set(key, value string) error {
+func (kv *KV) set(key, value string) {
 	defer kv.mu.Unlock()
 	kv.mu.Lock()
 	kv.Data[key] = value
-	return nil
 }
 
 func (kv *KV) Get(key string) (string, bool) {
