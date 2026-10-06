@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"log/slog"
+	"maps"
 	"math/rand"
 	"slices"
 	"sync"
@@ -86,6 +87,14 @@ type Status struct {
 	Logs     []*proto.LogEntry
 }
 
+type Stats struct {
+	Term        uint64
+	State       RaftState
+	CommitIndex uint64
+
+	MatchIndex map[uint64]uint64
+}
+
 func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, persister Persister) (*Raft, error) {
 	var peers []peer
 
@@ -130,7 +139,8 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 		stateMachine:     stateMachine,
 		persister:        persister,
 		log:              slog.Default().With("node", id),
-		electionDeadline: time.Now().Add(randomElectionTimeout())}
+		electionDeadline: time.Now().Add(randomElectionTimeout()),
+	}
 
 	if err := r.readPersist(); err != nil {
 		return nil, err
@@ -287,6 +297,23 @@ func (r *Raft) Status() Status {
 
 	if r.votedFor != nil {
 		s.VotedFor = new(*r.votedFor)
+	}
+
+	return s
+}
+
+func (r *Raft) Stats() Stats {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	s := Stats{
+		Term:        r.currentTerm,
+		State:       r.state,
+		CommitIndex: r.commitIndex,
+	}
+
+	if r.state == Leader {
+		s.MatchIndex = maps.Clone(r.matchIndex)
 	}
 
 	return s

@@ -6,6 +6,7 @@ import (
 	"net/http"
 
 	"github.com/ademolahh/keel/internal/kv"
+	"github.com/ademolahh/keel/internal/metrics"
 	"github.com/ademolahh/keel/internal/raft"
 )
 
@@ -162,16 +163,21 @@ func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func routes(h *RaftHandler) http.Handler {
+func routes(h *RaftHandler, m *metrics.RaftCollector) http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/set", h.LeaderOnly(h.Set))
-	mux.HandleFunc("/delete", h.LeaderOnly(h.Delete))
-	mux.HandleFunc("/get", h.Get)
-	mux.HandleFunc("/leader", h.Leader)
-	mux.HandleFunc("/state", h.State)
-	mux.HandleFunc("/healthz", h.Healthz)
-	mux.HandleFunc("/readyz", h.Readyz)
+	handle := func(route string, handler http.HandlerFunc) {
+		mux.Handle(route, m.Instrument(route, handler))
+	}
+
+	handle("/set", h.LeaderOnly(h.Set))
+	handle("/delete", h.LeaderOnly(h.Delete))
+	handle("/get", h.Get)
+	handle("/leader", h.Leader)
+	handle("/state", h.State)
+	handle("/healthz", h.Healthz)
+	handle("/readyz", h.Readyz)
+	mux.Handle("/metrics", m.Handler())
 
 	return mux
 }

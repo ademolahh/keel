@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/ademolahh/keel/internal/kv"
+	"github.com/ademolahh/keel/internal/metrics"
 	"github.com/ademolahh/keel/internal/raft"
 	"github.com/ademolahh/keel/proto"
 	"google.golang.org/grpc"
@@ -49,7 +50,7 @@ func Serve() error {
 	go raft.RunHeartbeat()
 
 	httpPort := os.Getenv("HTTP_PORT")
-	httpServer, httpErr := startHTTP(httpPort, New(raft, kv, httpPeers))
+	httpServer, httpErr := startHTTP(httpPort, New(raft, kv, httpPeers), metrics.New(raft))
 
 	slog.Info("serving", "node", id, "grpc_port", grpcPort, "http_addr", httpPort)
 
@@ -85,10 +86,10 @@ func startGRPC(port string, r *raft.Raft) (*grpc.Server, error) {
 	return server, nil
 }
 
-func startHTTP(addr string, h *RaftHandler) (*http.Server, <-chan error) {
+func startHTTP(addr string, h *RaftHandler, m *metrics.RaftCollector) (*http.Server, <-chan error) {
 	server := &http.Server{
 		Addr:    addr,
-		Handler: routes(h),
+		Handler: routes(h, m),
 	}
 
 	errs := make(chan error, 1)
