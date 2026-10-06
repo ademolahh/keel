@@ -34,10 +34,12 @@ func Serve() error {
 	}
 
 	kv := kv.NewKV()
-	raft, err := newRaft(id, kv)
+	m := metrics.New()
+	raft, err := newRaft(id, kv, m)
 	if err != nil {
 		return err
 	}
+	m.SetRaft(raft)
 
 	grpcPort := os.Getenv("PORT")
 	grpcServer, err := startGRPC(grpcPort, raft)
@@ -50,7 +52,7 @@ func Serve() error {
 	go raft.RunHeartbeat()
 
 	httpPort := os.Getenv("HTTP_PORT")
-	httpServer, httpErr := startHTTP(httpPort, New(raft, kv, httpPeers), metrics.New(raft))
+	httpServer, httpErr := startHTTP(httpPort, New(raft, kv, httpPeers), m)
 
 	slog.Info("serving", "node", id, "grpc_port", grpcPort, "http_addr", httpPort)
 

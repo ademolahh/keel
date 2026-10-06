@@ -7,10 +7,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ademolahh/keel/internal/metrics"
 	"github.com/ademolahh/keel/internal/raft"
+	"google.golang.org/grpc"
 )
 
-func newRaft(id uint64, sm raft.StateMachine) (*raft.Raft, error) {
+func newRaft(id uint64, sm raft.StateMachine, m *metrics.RaftCollector) (*raft.Raft, error) {
 	peers, err := parsePeers(os.Getenv("PEERS"))
 	if err != nil {
 		return nil, err
@@ -25,9 +27,9 @@ func newRaft(id uint64, sm raft.StateMachine) (*raft.Raft, error) {
 		dir = "."
 	}
 
-	persister := raft.NewFilePersister(filepath.Join(dir, fmt.Sprintf("raft-%d.state", id)))
+	persister := m.Persister(raft.NewFilePersister(filepath.Join(dir, fmt.Sprintf("raft-%d.state", id))))
 
-	return raft.New(id, peers, sm, persister)
+	return raft.New(id, peers, sm, persister, grpc.WithChainUnaryInterceptor(m.Interceptor()))
 }
 
 func parsePeers(s string) (map[uint64]string, error) {
