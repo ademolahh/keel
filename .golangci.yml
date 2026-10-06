@@ -7,6 +7,7 @@ linters:
         - (*encoding/json.Encoder).Encode
         - (net/http.ResponseWriter).Write
         - (*os.File).Close
+        - (io.Closer).Close
 
   exclusions:
     rules:
