@@ -12,8 +12,13 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 RUN go build -trimpath -ldflags="-s -w" -o /keel ./cmd/keel
 
-FROM alpine:3.23
+RUN mkdir /data
+
+FROM gcr.io/distroless/static-debian13:nonroot
 
 COPY --from=base /keel /keel
+COPY --from=base --chown=nonroot:nonroot /data /data
+
+USER nonroot:nonroot
 
 ENTRYPOINT ["/keel"]
