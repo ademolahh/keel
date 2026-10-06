@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+
+	"github.com/ademolahh/keel/proto"
+	protobuf "google.golang.org/protobuf/proto"
 )
 
 type KV struct {
@@ -60,6 +63,12 @@ func (kv *KV) get(key string) (string, bool) {
 	kv.mu.RLock()
 	value, ok := kv.Data[key]
 	return value, ok
+}
+
+func (kv *KV) Snapshot() ([]byte, error) {
+	defer kv.mu.RUnlock()
+	kv.mu.RLock()
+	return protobuf.Marshal(&proto.KVSnapshot{Data: kv.Data})
 }
 
 func (kv *KV) delete(key string) string {
