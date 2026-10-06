@@ -96,6 +96,9 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	}
 
 	// only the leader of a term at least as new as ours sends this
+	if r.leaderId != req.LeaderId {
+		r.leaderChanges++
+	}
 	r.leaderId = req.LeaderId
 	r.state = Follower
 

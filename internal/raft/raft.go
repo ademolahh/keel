@@ -58,9 +58,8 @@ type Raft struct {
 	peers []peer
 	state RaftState
 
-	// leaderId is the leader this node last heard from in its current term,
-	// or 0 when it does not know one.
-	leaderId uint64
+	leaderId      uint64
+	leaderChanges uint64
 
 	electionDeadline time.Time
 	voteTimeout      time.Duration
@@ -88,14 +87,17 @@ type Status struct {
 }
 
 type Stats struct {
-	Term        uint64
-	State       RaftState
-	CommitIndex uint64
+	Term          uint64
+	State         RaftState
+	CommitIndex   uint64
+	LastApplied   uint64
+	LogEntries    uint64
+	LeaderChanges uint64
 
 	MatchIndex map[uint64]uint64
 }
 
-func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, persister Persister) (*Raft, error) {
+func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, persister Persister, opts ...grpc.DialOption) (*Raft, error) {
 	var peers []peer
 
 	for pid, addr := range peerClient {
@@ -103,7 +105,7 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 			continue
 		}
 
-		conn, err := grpc.NewClient("passthrough:///"+addr,
+		conn, err := grpc.NewClient("passthrough:///"+addr, append([]grpc.DialOption{
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
 			grpc.WithConnectParams(grpc.ConnectParams{
 				Backoff: backoff.Config{
@@ -113,7 +115,7 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 					MaxDelay:   100 * time.Millisecond,
 				},
 			}),
-		)
+		}, opts...)...)
 
 		if err != nil {
 			slog.Error("dropping peer", "node", id, "peer", pid, "addr", addr, "err", err)
@@ -259,6 +261,7 @@ func (r *Raft) StartElection() {
 				if votes >= majority {
 					r.state = Leader
 					r.leaderId = r.id
+					r.leaderChanges++
 					r.log.Info("became leader", "term", term)
 
 					for _, p := range r.peers {
@@ -307,9 +310,12 @@ func (r *Raft) Stats() Stats {
 	defer r.mu.Unlock()
 
 	s := Stats{
-		Term:        r.currentTerm,
-		State:       r.state,
-		CommitIndex: r.commitIndex,
+		Term:          r.currentTerm,
+		State:         r.state,
+		CommitIndex:   r.commitIndex,
+		LastApplied:   r.lastApplied,
+		LogEntries:    uint64(len(r.logs)),
+		LeaderChanges: r.leaderChanges,
 	}
 
 	if r.state == Leader {
