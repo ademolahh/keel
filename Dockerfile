@@ -12,7 +12,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
 COPY . .
 RUN go build -trimpath -ldflags="-s -w" -o /keel ./cmd/keel
 
-RUN mkdir /data
+RUN mkdir -p /data/persist /data/snapshot
 
 FROM gcr.io/distroless/static-debian13:nonroot
 
