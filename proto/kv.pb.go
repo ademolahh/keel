@@ -24,6 +24,7 @@ const (
 type KVSnapshot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Data          map[string]string      `protobuf:"bytes,1,rep,name=data,proto3" json:"data,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Sessions      map[string]uint64      `protobuf:"bytes,2,rep,name=sessions,proto3" json:"sessions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -65,17 +66,28 @@ func (x *KVSnapshot) GetData() map[string]string {
 	return nil
 }
 
+func (x *KVSnapshot) GetSessions() map[string]uint64 {
+	if x != nil {
+		return x.Sessions
+	}
+	return nil
+}
+
 var File_proto_kv_proto protoreflect.FileDescriptor
 
 const file_proto_kv_proto_rawDesc = "" +
 	"\n" +
-	"\x0eproto/kv.proto\"p\n" +
+	"\x0eproto/kv.proto\"\xe4\x01\n" +
 	"\n" +
 	"KVSnapshot\x12)\n" +
-	"\x04data\x18\x01 \x03(\v2\x15.KVSnapshot.DataEntryR\x04data\x1a7\n" +
+	"\x04data\x18\x01 \x03(\v2\x15.KVSnapshot.DataEntryR\x04data\x125\n" +
+	"\bsessions\x18\x02 \x03(\v2\x19.KVSnapshot.SessionsEntryR\bsessions\x1a7\n" +
 	"\tDataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B!Z\x1fgithub.com/ademolahh/keel/protob\x06proto3"
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a;\n" +
+	"\rSessionsEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\x04R\x05value:\x028\x01B!Z\x1fgithub.com/ademolahh/keel/protob\x06proto3"
 
 var (
 	file_proto_kv_proto_rawDescOnce sync.Once
@@ -89,18 +101,20 @@ func file_proto_kv_proto_rawDescGZIP() []byte {
 	return file_proto_kv_proto_rawDescData
 }
 
-var file_proto_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_proto_kv_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_proto_kv_proto_goTypes = []any{
 	(*KVSnapshot)(nil), // 0: KVSnapshot
 	nil,                // 1: KVSnapshot.DataEntry
+	nil,                // 2: KVSnapshot.SessionsEntry
 }
 var file_proto_kv_proto_depIdxs = []int32{
 	1, // 0: KVSnapshot.data:type_name -> KVSnapshot.DataEntry
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2, // 1: KVSnapshot.sessions:type_name -> KVSnapshot.SessionsEntry
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_proto_kv_proto_init() }
@@ -114,7 +128,7 @@ func file_proto_kv_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_kv_proto_rawDesc), len(file_proto_kv_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -29,6 +29,11 @@ func (h *RaftHandler) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if cmd.ClientID != "" && cmd.Seq == 0 {
+		http.Error(w, "seq must be 1 or more when client_id is set", http.StatusBadRequest)
+		return
+	}
+
 	cmd.Op = "set"
 
 	data, err := json.Marshal(cmd)
@@ -51,6 +56,11 @@ func (h *RaftHandler) Delete(w http.ResponseWriter, r *http.Request) {
 
 	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if cmd.ClientID != "" && cmd.Seq == 0 {
+		http.Error(w, "seq must be 1 or more when client_id is set", http.StatusBadRequest)
 		return
 	}
 

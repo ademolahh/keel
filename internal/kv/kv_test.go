@@ -3,6 +3,9 @@ package kv
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/ademolahh/keel/proto"
+	protobuf "google.golang.org/protobuf/proto"
 )
 
 func TestSet(t *testing.T) {
@@ -96,7 +99,86 @@ func TestApply(t *testing.T) {
 	})
 }
 
+func TestDuplicate(t *testing.T) {
+	t.Run("skips a write whose sequence was already applied", func(t *testing.T) {
+		kv := NewKV()
+
+		kv.Apply(clientCommand(t, "set", "a", "1", "c1", 1))
+		kv.Apply(clientCommand(t, "set", "a", "2", "c1", 2))
+		kv.Apply(clientCommand(t, "set", "a", "1", "c1", 1))
+
+		if value := kv.Data["a"]; value != "2" {
+			t.Errorf("value: expected 2, got %q", value)
+		}
+	})
+
+	t.Run("applies a retried delete only once", func(t *testing.T) {
+		kv := NewKV()
+
+		kv.Apply(clientCommand(t, "delete", "a", "", "c1", 1))
+		kv.Apply(clientCommand(t, "set", "a", "1", "c2", 1))
+		kv.Apply(clientCommand(t, "delete", "a", "", "c1", 1))
+
+		if value, ok := kv.Data["a"]; !ok || value != "1" {
+			t.Errorf("value: expected 1, got %q (found %t)", value, ok)
+		}
+	})
+
+	t.Run("tracks each client separately", func(t *testing.T) {
+		kv := NewKV()
+
+		kv.Apply(clientCommand(t, "set", "a", "1", "c1", 5))
+		kv.Apply(clientCommand(t, "set", "b", "2", "c2", 1))
+
+		if value := kv.Data["b"]; value != "2" {
+			t.Errorf("value: expected 2, got %q", value)
+		}
+	})
+
+	t.Run("applies every write without a client id", func(t *testing.T) {
+		kv := NewKV()
+
+		kv.Apply(command(t, "set", "a", "1"))
+		kv.Apply(command(t, "set", "a", "2"))
+		kv.Apply(command(t, "set", "a", "1"))
+
+		if value := kv.Data["a"]; value != "1" {
+			t.Errorf("value: expected 1, got %q", value)
+		}
+	})
+
+	t.Run("keeps the sessions in a snapshot", func(t *testing.T) {
+		kv := NewKV()
+		kv.Apply(clientCommand(t, "set", "a", "1", "c1", 3))
+
+		data, err := kv.Snapshot()
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+
+		var snap proto.KVSnapshot
+		if err := protobuf.Unmarshal(data, &snap); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+
+		if seq := snap.Sessions["c1"]; seq != 3 {
+			t.Errorf("session c1: expected 3, got %d", seq)
+		}
+	})
+}
+
 // HELPERS
+func clientCommand(t *testing.T, op, key, value, client string, seq uint64) string {
+	t.Helper()
+
+	data, err := json.Marshal(Cmd{Op: op, Key: key, Value: value, ClientID: client, Seq: seq})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	return string(data)
+}
+
 func command(t *testing.T, op, key, value string) string {
 	t.Helper()
 

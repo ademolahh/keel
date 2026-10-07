@@ -3,5 +3,6 @@ syntax = "proto3";
 option go_package = "github.com/ademolahh/keel/proto";
 
 message KVSnapshot {
-  map<string, string> data = 1;
+  map<string, string> data     = 1;
+  map<string, uint64> sessions = 2;
 }
