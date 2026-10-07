@@ -171,6 +171,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		lastNew := req.PrevLogIndex + uint64(len(req.Entries))
 		if n := min(req.LeaderCommit, lastNew); n > r.commitIndex {
 			r.commitIndex = n
+			r.notifyCommit()
 		}
 	}
 

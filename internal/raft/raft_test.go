@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"slices"
@@ -363,6 +364,8 @@ func TestAppend(t *testing.T) {
 		raft, _ := newRaft(t, DEFAULT_LEADER_ID, DEFAULT_CLUSTER_SIZE)
 		raft.state = Leader
 		raft.leaderId = raft.id
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
 
 		// stand in for a heartbeat committing the entry; no peer is reachable,
 		// so Append's own rounds never can
@@ -387,6 +390,8 @@ func TestAppend(t *testing.T) {
 		raft, _ := newRaft(t, DEFAULT_LEADER_ID, DEFAULT_CLUSTER_SIZE)
 		raft.state = Leader
 		raft.leaderId = raft.id
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
 
 		// stand in for a newer leader overwriting the entry and committing its
 		// own at the same position
@@ -406,6 +411,99 @@ func TestAppend(t *testing.T) {
 
 		if raft.Append("set a=1") {
 			t.Error("append: expected false, got true")
+		}
+	})
+
+	t.Run("refuses a command when it is not the leader", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+
+		if raft.Append("set a=1") {
+			t.Error("append: expected false, got true")
+		}
+
+		if len(raft.logs) != 0 {
+			t.Errorf("log size: expected 0, got %d", len(raft.logs))
+		}
+	})
+
+	t.Run("returns only after the entry is applied", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		r := nodes[DEFAULT_LEADER_ID].raft
+		sm := &recorder{}
+		r.mu.Lock()
+		r.stateMachine = sm
+		r.state = Leader
+		r.leaderId = r.id
+		r.initNextIndex()
+		r.initMatchIndex()
+		r.mu.Unlock()
+
+		if !r.Append("set a=1") {
+			t.Fatal("append: expected true, got false")
+		}
+
+		if got := sm.applied(); !slices.Equal(got, []string{"set a=1"}) {
+			t.Errorf("applied: expected [set a=1], got %v", got)
+		}
+	})
+}
+
+func TestRead(t *testing.T) {
+	t.Run("refuses when it is not the leader", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+
+		if err := raft.Read(); !errors.Is(err, ErrNotLeader) {
+			t.Errorf("read: expected %v, got %v", ErrNotLeader, err)
+		}
+	})
+
+	t.Run("commits an empty entry on every read", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		r := nodes[DEFAULT_LEADER_ID].raft
+		r.mu.Lock()
+		r.state = Leader
+		r.leaderId = r.id
+		r.initNextIndex()
+		r.initMatchIndex()
+		r.mu.Unlock()
+
+		for range 2 {
+			if err := r.Read(); err != nil {
+				t.Fatalf("read: unexpected error: %v", err)
+			}
+		}
+
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		if len(r.logs) != 2 || r.logs[0].Cmd != "" || r.logs[1].Cmd != "" {
+			t.Errorf("log: expected two empty entries, got %v", r.logs)
+		}
+
+		if r.lastApplied != 2 {
+			t.Errorf("last applied: expected 2, got %d", r.lastApplied)
+		}
+	})
+
+	t.Run("fails when a leader that already committed in its term loses its majority", func(t *testing.T) {
+		nodes, _ := cluster(t, DEFAULT_CLUSTER_SIZE, nil)
+		r := nodes[DEFAULT_LEADER_ID].raft
+		r.mu.Lock()
+		r.state = Leader
+		r.leaderId = r.id
+		r.currentTerm = 1
+		r.logs = []*proto.LogEntry{{Term: 1}}
+		r.commitIndex = 1
+		r.initNextIndex()
+		r.initMatchIndex()
+		r.mu.Unlock()
+
+		nodes[3].stop()
+		nodes[4].stop()
+		nodes[5].stop()
+
+		if err := r.Read(); !errors.Is(err, ErrNoQuorum) {
+			t.Errorf("read: expected %v, got %v", ErrNoQuorum, err)
 		}
 	})
 }
@@ -795,6 +893,54 @@ func TestApply(t *testing.T) {
 			t.Errorf("applied: expected %v, got %v", want, got)
 		}
 	})
+
+	t.Run("applies every waiting entry when woken", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		sm := &recorder{}
+		raft.stateMachine = sm
+
+		const n = 100
+		for i := range n {
+			raft.logs = append(raft.logs, &proto.LogEntry{Term: 1, Cmd: fmt.Sprintf("set k=%d", i)})
+		}
+
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
+
+		raft.mu.Lock()
+		raft.commitIndex = n
+		raft.notifyCommit()
+		raft.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+
+		if err := raft.waitApplied(ctx, n); err != nil {
+			t.Fatalf("wait: %v (applied %d of %d)", err, len(sm.applied()), n)
+		}
+	})
+
+	t.Run("skips empty entries", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		sm := &recorder{}
+		raft.stateMachine = sm
+		raft.logs = []*proto.LogEntry{{Term: 1, Cmd: ""}, {Term: 1, Cmd: "set a=1"}}
+		raft.commitIndex = 2
+
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		if err := raft.waitApplied(ctx, 2); err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+
+		if got := sm.applied(); !slices.Equal(got, []string{"set a=1"}) {
+			t.Errorf("applied: expected [set a=1], got %v", got)
+		}
+	})
 }
 
 func TestStatus(t *testing.T) {
@@ -1092,6 +1238,9 @@ func cluster(t *testing.T, n int, delays map[uint64]time.Duration) (map[uint64]*
 
 		s := start(t, r, lst, opts...)
 		nodes[id] = &node{raft: r, stop: s}
+
+		go r.Apply()
+		t.Cleanup(r.Kill)
 	}
 
 	return nodes, peers

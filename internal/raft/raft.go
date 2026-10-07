@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"maps"
 	"math/rand"
@@ -67,6 +68,9 @@ type Raft struct {
 	killOnce sync.Once
 	done     chan struct{}
 	mu       sync.Mutex
+
+	commitCh chan struct{}
+	applied  chan struct{}
 
 	stateMachine StateMachine
 	persister    Persister
@@ -138,6 +142,8 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 		nextIndex:        make(map[uint64]uint64),
 		matchIndex:       make(map[uint64]uint64),
 		done:             make(chan struct{}),
+		commitCh:         make(chan struct{}, 1),
+		applied:          make(chan struct{}),
 		stateMachine:     stateMachine,
 		persister:        persister,
 		log:              slog.Default().With("node", id),
@@ -339,8 +345,18 @@ func (r *Raft) Leader() (uint64, bool) {
 	return r.leaderId, r.leaderId != 0
 }
 
+var (
+	ErrNotLeader = errors.New("not the leader")
+	ErrNoQuorum  = errors.New("could not reach a majority")
+)
+
 func (r *Raft) Append(cmd string) bool {
 	r.mu.Lock()
+	if r.state != Leader {
+		r.mu.Unlock()
+		return false
+	}
+
 	term := r.currentTerm
 	r.logs = append(r.logs, &proto.LogEntry{Term: term, Cmd: cmd})
 	index := uint64(len(r.logs))
@@ -357,29 +373,55 @@ func (r *Raft) Append(cmd string) bool {
 		}()
 	}
 
-	timeout := time.After(2 * time.Second)
-	ticker := time.NewTicker(5 * time.Millisecond)
-	defer ticker.Stop()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
 
-	for range ticker.C {
-		select {
-		case <-timeout:
-			return false
-		default:
-		}
-
-		r.mu.Lock()
-		committed := r.commitIndex >= index
-		ours := committed && r.logs[index-1].Term == term
-		r.mu.Unlock()
-
-		if committed {
-			return ours
-		}
-
+	if err := r.waitApplied(ctx, index); err != nil {
+		return false
 	}
 
-	return false
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return r.logs[index-1].Term == term
+}
+
+func (r *Raft) Read() error {
+	if !r.IsLeader() {
+		return ErrNotLeader
+	}
+
+	if !r.Append("") {
+		return ErrNoQuorum
+	}
+
+	return nil
+}
+
+func (r *Raft) waitApplied(ctx context.Context, index uint64) error {
+	for {
+		r.mu.Lock()
+		done := r.lastApplied >= index
+		applied := r.applied
+		r.mu.Unlock()
+
+		if done {
+			return nil
+		}
+
+		select {
+		case <-applied:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (r *Raft) notifyCommit() {
+	select {
+	case r.commitCh <- struct{}{}:
+	default:
+	}
 }
 
 func (r *Raft) HeartBeat() {
@@ -410,6 +452,7 @@ func (r *Raft) Apply() {
 		select {
 		case <-r.done:
 			return
+		case <-r.commitCh:
 		case <-ticker.C:
 		}
 
@@ -420,13 +463,22 @@ func (r *Raft) Apply() {
 			continue
 		}
 
-		r.lastApplied = r.lastApplied + 1
-		r.log.Debug("applied", "index", r.lastApplied)
-		cmd := r.logs[r.lastApplied-1].Cmd
+		first := r.lastApplied + 1
+		entries := append([]*proto.LogEntry(nil), r.logs[r.lastApplied:r.commitIndex]...)
 		r.mu.Unlock()
 
-		r.stateMachine.Apply(cmd)
+		for _, e := range entries {
+			if e.Cmd != "" {
+				r.stateMachine.Apply(e.Cmd)
+			}
+		}
 
+		r.mu.Lock()
+		r.lastApplied = first + uint64(len(entries)) - 1
+		r.log.Debug("applied", "from", first, "to", r.lastApplied)
+		close(r.applied)
+		r.applied = make(chan struct{})
+		r.mu.Unlock()
 	}
 }
 
@@ -515,6 +567,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 
 			if n > r.commitIndex && r.logs[n-1].Term == r.currentTerm {
 				r.commitIndex = n
+				r.notifyCommit()
 				r.log.Debug("committed", "index", n)
 			}
 			r.mu.Unlock()

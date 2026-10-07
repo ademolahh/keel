@@ -78,6 +78,13 @@ func (h *RaftHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if err := h.raft.Read(); err != nil {
+		slog.Warn("read not confirmed", "key", key, "err", err)
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "read could not be confirmed by a majority", http.StatusServiceUnavailable)
+		return
+	}
+
 	value, ok := h.store.Get(key)
 	if !ok {
 		http.Error(w, "key not found", http.StatusNotFound)
@@ -172,7 +179,7 @@ func routes(h *RaftHandler, m *metrics.RaftCollector) http.Handler {
 
 	handle("/set", h.LeaderOnly(h.Set))
 	handle("/delete", h.LeaderOnly(h.Delete))
-	handle("/get", h.Get)
+	handle("/get", h.LeaderOnly(h.Get))
 	handle("/leader", h.Leader)
 	handle("/state", h.State)
 	handle("/healthz", h.Healthz)
