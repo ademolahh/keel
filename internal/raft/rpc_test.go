@@ -469,6 +469,35 @@ func TestAppendEntries(t *testing.T) {
 		}
 	})
 
+	t.Run("caps the commit index at the last entry the leader sent", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()[:4]
+
+		raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, PrevLogIndex: 2, PrevLogTerm: 1, LeaderCommit: 4,
+		})
+
+		if raft.commitIndex != 2 {
+			t.Errorf("commit index: expected 2, got %d", raft.commitIndex)
+		}
+	})
+
+	t.Run("never lowers the commit index", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()
+		raft.commitIndex = 3
+
+		raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, PrevLogIndex: 1, PrevLogTerm: 1, LeaderCommit: 5,
+		})
+
+		if raft.commitIndex != 3 {
+			t.Errorf("commit index: expected 3, got %d", raft.commitIndex)
+		}
+	})
+
 	t.Run("hints its log length when prevLogIndex is past its log", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.currentTerm = 3

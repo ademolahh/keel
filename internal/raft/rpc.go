@@ -163,7 +163,10 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	}
 
 	if req.LeaderCommit > r.commitIndex {
-		r.commitIndex = min(req.LeaderCommit, uint64(len(r.logs)))
+		lastNew := req.PrevLogIndex + uint64(len(req.Entries))
+		if n := min(req.LeaderCommit, lastNew); n > r.commitIndex {
+			r.commitIndex = n
+		}
 	}
 
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
