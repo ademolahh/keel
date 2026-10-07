@@ -1,7 +1,6 @@
 package metrics
 
 import (
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,7 +8,6 @@ import (
 	"github.com/ademolahh/keel/internal/raft"
 	"github.com/ademolahh/keel/proto"
 	"github.com/prometheus/client_golang/prometheus/testutil"
-	protobuf "google.golang.org/protobuf/proto"
 )
 
 func TestRaftMetrics(t *testing.T) {
@@ -92,14 +90,13 @@ func newNode(t *testing.T, term uint64, entries int) *raft.Raft {
 		logs[i] = &proto.LogEntry{Term: term, Cmd: "set a=1"}
 	}
 
-	data, err := protobuf.Marshal(&proto.PersistentState{CurrentTerm: term, Logs: logs})
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
+	persister := raft.NewFilePersister(t.TempDir())
+	if err := persister.SaveState(term, nil); err != nil {
+		t.Fatalf("save state: %v", err)
 	}
 
-	persister := raft.NewFilePersister(filepath.Join(t.TempDir(), "raft.state"))
-	if err := persister.Save(data); err != nil {
-		t.Fatalf("save: %v", err)
+	if err := persister.SaveLog(1, logs); err != nil {
+		t.Fatalf("save log: %v", err)
 	}
 
 	r, err := raft.New(1, map[uint64]string{1: "localhost:0"}, kv.NewKV(), persister)

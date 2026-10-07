@@ -2,9 +2,9 @@ package metrics
 
 import (
 	"errors"
-	"slices"
 	"testing"
 
+	"github.com/ademolahh/keel/proto"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
 )
@@ -14,17 +14,22 @@ func TestPersister(t *testing.T) {
 		c := New()
 		p := c.Persister(&stubPersister{})
 
-		if err := p.Save([]byte("state")); err != nil {
-			t.Fatalf("save: unexpected error: %v", err)
+		if err := p.SaveState(3, nil); err != nil {
+			t.Fatalf("save state: unexpected error: %v", err)
 		}
 
-		data, err := p.Load()
+		if err := p.SaveLog(1, []*proto.LogEntry{{Term: 3, Cmd: "set a=1"}}); err != nil {
+			t.Fatalf("save log: unexpected error: %v", err)
+		}
+
+		state, err := p.Load()
 		if err != nil {
 			t.Fatalf("load: unexpected error: %v", err)
 		}
 
-		if !slices.Equal(data, []byte("state")) {
-			t.Errorf("loaded: expected %q, got %q", "state", data)
+		if state.CurrentTerm != 3 || len(state.Logs) != 1 {
+			t.Errorf("loaded: expected term 3 and 1 entry, got term %d and %d entries",
+				state.CurrentTerm, len(state.Logs))
 		}
 	})
 
@@ -32,8 +37,8 @@ func TestPersister(t *testing.T) {
 		c := New()
 		p := c.Persister(&stubPersister{})
 
-		p.Save([]byte("a"))
-		p.Save([]byte("b"))
+		p.SaveState(1, nil)
+		p.SaveLog(1, nil)
 
 		if got := sampleCount(t, c.persist.duration); got != 2 {
 			t.Errorf("timed saves: expected 2, got %d", got)
@@ -45,8 +50,12 @@ func TestPersister(t *testing.T) {
 		failure := errors.New("disk full")
 		p := c.Persister(&stubPersister{err: failure})
 
-		if err := p.Save([]byte("state")); !errors.Is(err, failure) {
-			t.Errorf("error: expected %v, got %v", failure, err)
+		if err := p.SaveState(1, nil); !errors.Is(err, failure) {
+			t.Errorf("save state error: expected %v, got %v", failure, err)
+		}
+
+		if err := p.SaveLog(1, nil); !errors.Is(err, failure) {
+			t.Errorf("save log error: expected %v, got %v", failure, err)
 		}
 	})
 }
@@ -54,21 +63,30 @@ func TestPersister(t *testing.T) {
 // HELPERS
 
 type stubPersister struct {
-	data []byte
-	err  error
+	state proto.PersistentState
+	err   error
 }
 
-func (p *stubPersister) Save(data []byte) error {
+func (p *stubPersister) SaveState(term uint64, votedFor *uint64) error {
 	if p.err != nil {
 		return p.err
 	}
 
-	p.data = data
+	p.state.CurrentTerm, p.state.VotedFor = term, votedFor
 	return nil
 }
 
-func (p *stubPersister) Load() ([]byte, error) {
-	return p.data, nil
+func (p *stubPersister) SaveLog(from uint64, entries []*proto.LogEntry) error {
+	if p.err != nil {
+		return p.err
+	}
+
+	p.state.Logs = append(p.state.Logs[:from-1], entries...)
+	return nil
+}
+
+func (p *stubPersister) Load() (*proto.PersistentState, error) {
+	return &p.state, nil
 }
 
 // sampleCount is how many observations o has recorded.

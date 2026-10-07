@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"path/filepath"
 	"slices"
 	"sync"
 	"testing"
@@ -13,6 +12,7 @@ import (
 	"github.com/ademolahh/keel/internal/kv"
 	"github.com/ademolahh/keel/proto"
 	"google.golang.org/grpc"
+	protobuf "google.golang.org/protobuf/proto"
 )
 
 // lastApplied <= commitIndex <= last log index - invariant
@@ -892,7 +892,7 @@ func TestMajority(t *testing.T) {
 
 func TestPersist(t *testing.T) {
 	t.Run("restores term, vote and log after a restart", func(t *testing.T) {
-		persister := NewFilePersister(filepath.Join(t.TempDir(), "raft.state"))
+		persister := NewFilePersister(t.TempDir())
 		peers := map[uint64]string{1: "localhost:0", 2: "localhost:0"}
 
 		before, err := New(1, peers, &kv.KV{}, persister)
@@ -960,23 +960,44 @@ func TestRaftState(t *testing.T) {
 // memoryPersister keeps the state in memory. Cluster nodes can outlive their
 // test briefly, and this way their late saves never hit a removed directory.
 type memoryPersister struct {
-	mu   sync.Mutex
-	data []byte
+	mu    sync.Mutex
+	state *proto.PersistentState
 }
 
-func (p *memoryPersister) Save(data []byte) error {
+func (p *memoryPersister) SaveState(term uint64, votedFor *uint64) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.data = append([]byte(nil), data...)
+	if p.state == nil {
+		p.state = &proto.PersistentState{}
+	}
+
+	p.state.CurrentTerm, p.state.VotedFor = term, votedFor
 	return nil
 }
 
-func (p *memoryPersister) Load() ([]byte, error) {
+func (p *memoryPersister) SaveLog(from uint64, entries []*proto.LogEntry) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return p.data, nil
+	if p.state == nil {
+		p.state = &proto.PersistentState{}
+	}
+
+	keep := min(int(from-1), len(p.state.Logs))
+	p.state.Logs = append(p.state.Logs[:keep:keep], entries...)
+	return nil
+}
+
+func (p *memoryPersister) Load() (*proto.PersistentState, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.state == nil {
+		return nil, nil
+	}
+
+	return protobuf.Clone(p.state).(*proto.PersistentState), nil
 }
 
 // recorder is a state machine that remembers the commands applied to it.

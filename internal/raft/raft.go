@@ -203,7 +203,7 @@ func (r *Raft) StartElection() {
 	id := r.id
 
 	r.votedFor = &id
-	r.persist()
+	r.persistState()
 	r.log.Info("starting election", "term", term)
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 	votes := 1
@@ -248,7 +248,7 @@ func (r *Raft) StartElection() {
 				r.state = Follower
 				r.votedFor = nil
 				r.leaderId = 0
-				r.persist()
+				r.persistState()
 				r.log.Info("stepping down", "term", res.Term, "reason", "higher term in vote reply")
 			}
 
@@ -343,8 +343,8 @@ func (r *Raft) Append(cmd string) bool {
 	r.mu.Lock()
 	term := r.currentTerm
 	r.logs = append(r.logs, &proto.LogEntry{Term: term, Cmd: cmd})
-	r.persist()
 	index := uint64(len(r.logs))
+	r.persistLog(index)
 	peers := append([]peer(nil), r.peers...)
 	r.mu.Unlock()
 
@@ -488,7 +488,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			r.currentTerm = res.Term
 			r.votedFor = nil
 			r.leaderId = 0
-			r.persist()
+			r.persistState()
 			r.log.Info("stepping down", "term", res.Term, "reason", "higher term in append reply")
 			r.mu.Unlock()
 			return

@@ -15,7 +15,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 	dirty := false
 	defer func() {
 		if dirty {
-			r.persist()
+			r.persistState()
 		}
 	}()
 
@@ -82,10 +82,15 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	defer r.mu.Unlock()
 
 	// save before the reply leaves whenever the term or log changed
-	dirty := false
+	stateDirty := false
+	var logFrom uint64
 	defer func() {
-		if dirty {
-			r.persist()
+		if stateDirty {
+			r.persistState()
+		}
+
+		if logFrom != 0 {
+			r.persistLog(logFrom)
 		}
 	}()
 
@@ -139,7 +144,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	if req.Term > r.currentTerm {
 		r.currentTerm = req.Term
 		r.votedFor = nil
-		dirty = true
+		stateDirty = true
 		r.log.Debug("adopted newer term", "term", req.Term, "from", "append entries")
 	}
 
@@ -158,7 +163,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		}
 
 		r.logs = append(r.logs, req.Entries[i:]...)
-		dirty = true
+		logFrom = index
 		break
 	}
 
