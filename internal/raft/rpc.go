@@ -264,6 +264,7 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 	r.lastIncludedIndex = snapshot.LastIncludedIndex
 	r.lastIncludedTerm = snapshot.LastIncludedTerm
 	r.commitIndex = snapshot.LastIncludedIndex
+	r.snapshot = snapshot
 	r.pendingSnapshot = snapshot
 	r.notifyCommit()
 

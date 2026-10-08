@@ -979,6 +979,10 @@ func TestSnapshot(t *testing.T) {
 		if base := raft.persister.(*memoryPersister).state.LogBase; base != 30 {
 			t.Errorf("saved log: expected it to start after 30, got %d", base)
 		}
+
+		if raft.snapshot == nil || raft.snapshot.LastIncludedIndex != 30 {
+			t.Errorf("snapshot in memory: expected one through 30, got %v", raft.snapshot)
+		}
 	})
 
 	t.Run("keeps the log while it is 1KB or less", func(t *testing.T) {
@@ -1027,9 +1031,7 @@ func TestSendSnapshot(t *testing.T) {
 		r.lastIncludedIndex, r.lastIncludedTerm = 4, 3
 		r.logs = []*proto.LogEntry{{Term: 3, Cmd: "set e=5"}}
 		r.commitIndex, r.lastApplied = 4, 4
-		r.persister.(*memoryPersister).snapshot = snapshotBytes(t, &proto.Snapshot{
-			LastIncludedIndex: 4, LastIncludedTerm: 3, Data: data,
-		})
+		r.snapshot = &proto.Snapshot{LastIncludedIndex: 4, LastIncludedTerm: 3, Data: data}
 		for _, p := range r.peers {
 			r.nextIndex[p.id] = 1
 			r.matchIndex[p.id] = 0
@@ -1221,6 +1223,10 @@ func TestRestart(t *testing.T) {
 		}
 
 		assertEntries(t, after.logs, []*proto.LogEntry{entry})
+
+		if after.snapshot == nil || after.snapshot.LastIncludedIndex != 4 {
+			t.Errorf("snapshot in memory: expected one through 4, got %v", after.snapshot)
+		}
 
 		go after.Apply()
 		t.Cleanup(after.Kill)

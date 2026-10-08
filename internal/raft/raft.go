@@ -59,6 +59,7 @@ type Raft struct {
 	lastIncludedTerm  uint64
 	snapshotChunks    []byte
 	pendingSnapshot   *proto.Snapshot
+	snapshot          *proto.Snapshot
 
 	nextIndex  map[uint64]uint64
 	matchIndex map[uint64]uint64
@@ -379,7 +380,9 @@ func (r *Raft) Snapshot() {
 
 	term := r.termAt(index)
 
-	saved, err := protobuf.Marshal(&proto.Snapshot{LastIncludedIndex: index, LastIncludedTerm: term, Data: data})
+	snapshot := &proto.Snapshot{LastIncludedIndex: index, LastIncludedTerm: term, Data: data}
+
+	saved, err := protobuf.Marshal(snapshot)
 	if err != nil {
 		r.log.Error("snapshot failed", "index", index, "err", err)
 		return
@@ -389,6 +392,7 @@ func (r *Raft) Snapshot() {
 		panic(fmt.Sprintf("persist: %v", err))
 	}
 
+	r.snapshot = snapshot
 	r.logs = slices.Clone(r.entriesFrom(index + 1))
 	r.lastIncludedIndex = index
 	r.lastIncludedTerm = term
@@ -562,17 +566,11 @@ const snapshotChunkSize = 32 * 1024
 
 func (r *Raft) sendSnapshot(ctx context.Context, p peer, term uint64) bool {
 	r.mu.Lock()
-	saved, err := r.persister.LoadSnapshot()
+	snapshot := r.snapshot
 	r.mu.Unlock()
 
-	if err != nil || saved == nil {
-		r.log.Error("snapshot not loaded", "peer", p.id, "err", err)
-		return false
-	}
-
-	var snapshot proto.Snapshot
-	if err := protobuf.Unmarshal(saved, &snapshot); err != nil {
-		r.log.Error("snapshot not loaded", "peer", p.id, "err", err)
+	if snapshot == nil {
+		r.log.Error("no snapshot to send", "peer", p.id)
 		return false
 	}
 

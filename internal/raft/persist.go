@@ -376,6 +376,7 @@ func (r *Raft) readPersist() error {
 	r.lastIncludedIndex = index
 	r.lastIncludedTerm = snapshot.LastIncludedTerm
 	r.commitIndex = index
+	r.snapshot = &snapshot
 	r.pendingSnapshot = &snapshot
 
 	return nil

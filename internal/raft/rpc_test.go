@@ -628,6 +628,10 @@ func TestInstallSnapshot(t *testing.T) {
 				raft.commitIndex, raft.pendingSnapshot)
 		}
 
+		if raft.snapshot == nil || raft.snapshot.LastIncludedIndex != 4 {
+			t.Errorf("snapshot in memory: expected one through 4, got %v", raft.snapshot)
+		}
+
 		if saved := savedSnapshot(t, raft); saved.LastIncludedIndex != 4 || saved.LastIncludedTerm != 3 {
 			t.Errorf("saved snapshot: expected index 4 term 3, got index %d term %d",
 				saved.LastIncludedIndex, saved.LastIncludedTerm)
