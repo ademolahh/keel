@@ -91,23 +91,6 @@ type peer struct {
 	client proto.RaftClient
 }
 
-type Status struct {
-	Term     uint64
-	VotedFor *uint64
-	Logs     []*proto.LogEntry
-}
-
-type Stats struct {
-	Term          uint64
-	State         RaftState
-	CommitIndex   uint64
-	LastApplied   uint64
-	LogEntries    uint64
-	LeaderChanges uint64
-
-	MatchIndex map[uint64]uint64
-}
-
 func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, persister Persister, opts ...grpc.DialOption) (*Raft, error) {
 	var peers []peer
 

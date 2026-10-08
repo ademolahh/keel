@@ -10,6 +10,23 @@ import (
 	"github.com/ademolahh/keel/proto"
 )
 
+type Status struct {
+	Term     uint64
+	VotedFor *uint64
+	Logs     []*proto.LogEntry
+}
+
+type Stats struct {
+	Term          uint64
+	State         RaftState
+	CommitIndex   uint64
+	LastApplied   uint64
+	LogEntries    uint64
+	LeaderChanges uint64
+
+	MatchIndex map[uint64]uint64
+}
+
 func (r *Raft) IsLeader() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
