@@ -167,6 +167,44 @@ func TestDuplicate(t *testing.T) {
 	})
 }
 
+func TestRestore(t *testing.T) {
+	t.Run("replaces the data and sessions with the snapshot's", func(t *testing.T) {
+		source := NewKV()
+		source.Apply(clientCommand(t, "set", "a", "1", "c1", 2))
+
+		data, err := source.Snapshot()
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+
+		kv := NewKV()
+		kv.Apply(command(t, "set", "b", "2"))
+
+		if err := kv.Restore(data); err != nil {
+			t.Fatalf("restore: %v", err)
+		}
+
+		if value, ok := kv.Get("a"); !ok || value != "1" {
+			t.Errorf("a: expected 1, got %q (found %t)", value, ok)
+		}
+
+		if _, ok := kv.Get("b"); ok {
+			t.Error("b: expected it gone after the restore")
+		}
+
+		kv.Apply(clientCommand(t, "set", "a", "9", "c1", 2))
+		if value, _ := kv.Get("a"); value != "1" {
+			t.Errorf("a after a retried write: expected 1, got %q", value)
+		}
+	})
+
+	t.Run("rejects data that does not decode", func(t *testing.T) {
+		if err := NewKV().Restore([]byte{0xff}); err == nil {
+			t.Error("restore: expected an error, got none")
+		}
+	})
+}
+
 // HELPERS
 func clientCommand(t *testing.T, op, key, value, client string, seq uint64) string {
 	t.Helper()

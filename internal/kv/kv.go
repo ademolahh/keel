@@ -92,6 +92,28 @@ func (kv *KV) get(key string) (string, bool) {
 	return value, ok
 }
 
+func (kv *KV) Restore(data []byte) error {
+	var snapshot proto.KVSnapshot
+	if err := protobuf.Unmarshal(data, &snapshot); err != nil {
+		return err
+	}
+
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+
+	kv.Data = snapshot.Data
+	if kv.Data == nil {
+		kv.Data = make(map[string]string)
+	}
+
+	kv.sessions = snapshot.Sessions
+	if kv.sessions == nil {
+		kv.sessions = make(map[string]uint64)
+	}
+
+	return nil
+}
+
 func (kv *KV) Snapshot() ([]byte, error) {
 	defer kv.mu.RUnlock()
 	kv.mu.RLock()
