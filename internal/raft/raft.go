@@ -60,6 +60,7 @@ type Raft struct {
 	snapshotChunks    []byte
 	pendingSnapshot   *proto.Snapshot
 	snapshot          *proto.Snapshot
+	snapshotThreshold int
 
 	nextIndex  map[uint64]uint64
 	matchIndex map[uint64]uint64
@@ -125,20 +126,21 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 	}
 
 	r := &Raft{
-		id:               id,
-		peers:            peers,
-		state:            Follower,
-		logs:             []*proto.LogEntry{},
-		voteTimeout:      5 * time.Second,
-		nextIndex:        make(map[uint64]uint64),
-		matchIndex:       make(map[uint64]uint64),
-		done:             make(chan struct{}),
-		commitCh:         make(chan struct{}, 1),
-		applied:          make(chan struct{}),
-		stateMachine:     stateMachine,
-		persister:        persister,
-		log:              slog.Default().With("node", id),
-		electionDeadline: time.Now().Add(randomElectionTimeout()),
+		id:                id,
+		peers:             peers,
+		state:             Follower,
+		logs:              []*proto.LogEntry{},
+		voteTimeout:       5 * time.Second,
+		snapshotThreshold: DefaultSnapshotThreshold,
+		nextIndex:         make(map[uint64]uint64),
+		matchIndex:        make(map[uint64]uint64),
+		done:              make(chan struct{}),
+		commitCh:          make(chan struct{}, 1),
+		applied:           make(chan struct{}),
+		stateMachine:      stateMachine,
+		persister:         persister,
+		log:               slog.Default().With("node", id),
+		electionDeadline:  time.Now().Add(randomElectionTimeout()),
 	}
 
 	if err := r.readPersist(); err != nil {
@@ -347,7 +349,7 @@ func (r *Raft) HeartBeat() {
 	}
 }
 
-const snapshotThreshold = 1024
+const DefaultSnapshotThreshold = 1024
 
 func (r *Raft) Snapshot() {
 	r.mu.Lock()
@@ -359,9 +361,10 @@ func (r *Raft) Snapshot() {
 	}
 
 	size := protobuf.Size(&proto.PersistentState{Logs: r.logs[:index-base]})
+	threshold := r.snapshotThreshold
 	r.mu.Unlock()
 
-	if size <= snapshotThreshold {
+	if size <= threshold {
 		return
 	}
 

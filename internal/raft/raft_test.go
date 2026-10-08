@@ -985,6 +985,54 @@ func TestSnapshot(t *testing.T) {
 		}
 	})
 
+	t.Run("waits for the configured threshold", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.stateMachine = &recorder{}
+		raft.SetSnapshotThreshold(4096)
+		raft.logs = bigLogs(30, 2)
+		raft.commitIndex = 30
+
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		if err := raft.waitApplied(ctx, 30); err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+
+		raft.mu.Lock()
+		defer raft.mu.Unlock()
+
+		if raft.lastIncludedIndex != 0 {
+			t.Errorf("snapshot: expected none below 4096 bytes, got one through %d", raft.lastIncludedIndex)
+		}
+	})
+
+	t.Run("snapshots sooner with a lower threshold", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.stateMachine = &recorder{}
+		raft.SetSnapshotThreshold(100)
+		raft.logs = bigLogs(10, 1)
+		raft.commitIndex = 10
+
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
+
+		ok := waitFor(t, time.Second, func() bool {
+			raft.mu.Lock()
+			defer raft.mu.Unlock()
+
+			return raft.lastIncludedIndex == 10
+		})
+		if !ok {
+			t.Error("snapshot: expected one through 10 above 100 bytes")
+		}
+	})
+
 	t.Run("keeps the log while it is 1KB or less", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.stateMachine = &recorder{}

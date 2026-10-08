@@ -27,6 +27,13 @@ type Stats struct {
 	MatchIndex map[uint64]uint64
 }
 
+func (r *Raft) SetSnapshotThreshold(bytes int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.snapshotThreshold = bytes
+}
+
 func (r *Raft) IsLeader() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()

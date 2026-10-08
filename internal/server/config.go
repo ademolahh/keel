@@ -38,7 +38,21 @@ func newRaft(id uint64, sm raft.StateMachine, m *metrics.RaftCollector) (*raft.R
 
 	persister := m.Persister(raft.NewFilePersister(persistDir, snapshotDir))
 
-	return raft.New(id, peers, sm, persister, grpc.WithChainUnaryInterceptor(m.Interceptor()))
+	r, err := raft.New(id, peers, sm, persister, grpc.WithChainUnaryInterceptor(m.Interceptor()))
+	if err != nil {
+		return nil, err
+	}
+
+	if v := os.Getenv("SNAPSHOT_THRESHOLD"); v != "" {
+		bytes, err := strconv.Atoi(v)
+		if err != nil || bytes <= 0 {
+			return nil, fmt.Errorf("SNAPSHOT_THRESHOLD: want a positive number of bytes, got %q", v)
+		}
+
+		r.SetSnapshotThreshold(bytes)
+	}
+
+	return r, nil
 }
 
 func parsePeers(s string) (map[uint64]string, error) {
