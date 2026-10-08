@@ -2,9 +2,11 @@ package raft
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/ademolahh/keel/proto"
+	protobuf "google.golang.org/protobuf/proto"
 )
 
 func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (*proto.RequestVoteResponse, error) {
@@ -36,11 +38,13 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 		r.log.Debug("adopted newer term", "term", req.Term, "from", "vote request")
 	}
 
-	lastLogIndex := len(r.logs)
+	lastLogIndex := r.lastIndex()
 
 	if lastLogIndex != 0 {
+		lastLogTerm := r.termAt(lastLogIndex)
+
 		// if terms are not the same, the one with higher term is the latest
-		if r.logs[lastLogIndex-1].Term > req.LastLogTerm {
+		if lastLogTerm > req.LastLogTerm {
 			return &proto.RequestVoteResponse{
 				VoteGranted: false,
 				Term:        r.currentTerm,
@@ -48,7 +52,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 		}
 
 		// if terms are the same, the one with higher index is latest
-		if req.LastLogTerm == r.logs[lastLogIndex-1].Term && lastLogIndex > int(req.LastLogIndex) {
+		if req.LastLogTerm == lastLogTerm && lastLogIndex > req.LastLogIndex {
 			return &proto.RequestVoteResponse{
 				VoteGranted: false,
 				Term:        r.currentTerm,
@@ -107,12 +111,19 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	r.leaderId = req.LeaderId
 	r.state = Follower
 
-	followerLogIndex := uint64(len(r.logs))
-	if req.PrevLogIndex != 0 {
+	prevLogIndex, prevLogTerm, entries := req.PrevLogIndex, req.PrevLogTerm, req.Entries
+	if prevLogIndex < r.lastIncludedIndex {
+		skip := min(r.lastIncludedIndex-prevLogIndex, uint64(len(entries)))
+		entries = entries[skip:]
+		prevLogIndex, prevLogTerm = r.lastIncludedIndex, r.lastIncludedTerm
+	}
+
+	followerLogIndex := r.lastIndex()
+	if prevLogIndex != 0 {
 		// leader - {term: 1, index: 1} {term: 2, index: 2} {term: 3, index: 3}
 		// follower - {term: 1, index: 1} {term: 2, index: 2}
-		if req.PrevLogIndex > followerLogIndex {
-			r.log.Debug("rejected append", "reason", "missing entry", "prev_log_index", req.PrevLogIndex)
+		if prevLogIndex > followerLogIndex {
+			r.log.Debug("rejected append", "reason", "missing entry", "prev_log_index", prevLogIndex)
 			return &proto.AppendEntriesResponse{
 				Term:    r.currentTerm,
 				Success: false,
@@ -126,11 +137,11 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		// OR
 		// leader - {term: 1, index: 1} {term: 2, index: 2} {term: 2, index: 3}
 		// follower - {term: 1, index: 1} {term: 2, index: 2} {term: 3, index: 3} {term: 3, index: 4}
-		if r.logs[req.PrevLogIndex-1].Term != req.PrevLogTerm {
-			r.log.Debug("rejected append", "reason", "term mismatch", "prev_log_index", req.PrevLogIndex)
-			index := getMatchingTermIndex(r.logs, req.PrevLogTerm, int(req.PrevLogIndex))
-			if index == nil {
-				index = new(uint64(0))
+		if r.termAt(prevLogIndex) != prevLogTerm {
+			r.log.Debug("rejected append", "reason", "term mismatch", "prev_log_index", prevLogIndex)
+			index := new(r.lastIncludedIndex)
+			if i := getMatchingTermIndex(r.logs, prevLogTerm, int(prevLogIndex-r.lastIncludedIndex)); i != nil {
+				*index += *i
 			}
 
 			return &proto.AppendEntriesResponse{
@@ -151,24 +162,24 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	// if log and term is the same, then all entry store the same command
 	// if log and term is the same, the logs are identical in all preceeding entries
 
-	for i, entry := range req.Entries {
-		index := req.PrevLogIndex + uint64(i) + 1
+	for i, entry := range entries {
+		index := prevLogIndex + uint64(i) + 1
 
-		if index <= uint64(len(r.logs)) {
-			if r.logs[index-1].Term == entry.Term {
+		if index <= r.lastIndex() {
+			if r.termAt(index) == entry.Term {
 				continue
 			}
 
-			r.logs = r.logs[:index-1]
+			r.logs = r.logs[:index-r.lastIncludedIndex-1]
 		}
 
-		r.logs = append(r.logs, req.Entries[i:]...)
+		r.logs = append(r.logs, entries[i:]...)
 		logFrom = index
 		break
 	}
 
 	if req.LeaderCommit > r.commitIndex {
-		lastNew := req.PrevLogIndex + uint64(len(req.Entries))
+		lastNew := prevLogIndex + uint64(len(entries))
 		if n := min(req.LeaderCommit, lastNew); n > r.commitIndex {
 			r.commitIndex = n
 			r.notifyCommit()
@@ -181,7 +192,88 @@ func (r *Raft) AppendEntries(ctx context.Context,
 }
 
 func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRequest) (*proto.InstallSnapshotResponse, error) {
-	panic("")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if req.Term < r.currentTerm {
+		return &proto.InstallSnapshotResponse{
+			Term: r.currentTerm,
+		}, nil
+	}
+
+	if req.Term > r.currentTerm {
+		r.currentTerm = req.Term
+		r.votedFor = nil
+		r.persistState()
+		r.log.Debug("adopted newer term", "term", req.Term, "from", "install snapshot")
+	}
+
+	if r.leaderId != req.LeaderId {
+		r.leaderChanges++
+	}
+	r.leaderId = req.LeaderId
+	r.state = Follower
+	r.electionDeadline = time.Now().Add(randomElectionTimeout())
+
+	reply := &proto.InstallSnapshotResponse{Term: r.currentTerm}
+
+	if req.Offset == 0 {
+		r.snapshotChunks = nil
+	}
+
+	if req.Offset != uint64(len(r.snapshotChunks)) {
+		r.log.Debug("rejected snapshot chunk", "offset", req.Offset, "have", len(r.snapshotChunks))
+		return reply, nil
+	}
+
+	r.snapshotChunks = append(r.snapshotChunks, req.Data...)
+
+	if !req.Done {
+		return reply, nil
+	}
+
+	snapshot := &proto.Snapshot{
+		LastIncludedIndex: req.LastIncludedIndex,
+		LastIncludedTerm:  req.LastIncludedTerm,
+		Data:              r.snapshotChunks,
+	}
+	r.snapshotChunks = nil
+
+	if snapshot.LastIncludedIndex <= r.commitIndex {
+		return reply, nil
+	}
+
+	data, err := protobuf.Marshal(snapshot)
+	if err != nil {
+		r.log.Error("snapshot not saved", "index", snapshot.LastIncludedIndex, "err", err)
+		return reply, nil
+	}
+
+	if err := r.persister.SaveSnapshot(data); err != nil {
+		r.log.Error("snapshot not saved", "index", snapshot.LastIncludedIndex, "err", err)
+		return reply, nil
+	}
+
+	if snapshot.LastIncludedIndex <= r.lastIndex() && r.termAt(snapshot.LastIncludedIndex) == snapshot.LastIncludedTerm {
+		r.logs = append([]*proto.LogEntry(nil), r.entriesFrom(snapshot.LastIncludedIndex+1)...)
+	} else {
+		r.logs = nil
+	}
+
+	r.lastIncludedIndex = snapshot.LastIncludedIndex
+	r.lastIncludedTerm = snapshot.LastIncludedTerm
+	r.commitIndex = snapshot.LastIncludedIndex
+	r.pendingSnapshot = snapshot
+	r.notifyCommit()
+
+	if err := r.persister.ResetLog(snapshot.LastIncludedIndex, r.logs); err != nil {
+		panic(fmt.Sprintf("persist: %v", err))
+	}
+
+	r.log.Info("installed snapshot", "index", snapshot.LastIncludedIndex, "term", snapshot.LastIncludedTerm,
+		"kept_entries", len(r.logs))
+
+	return reply, nil
 }
 
 func getMatchingTermIndex(logs []*proto.LogEntry, term uint64, prevLogIndex int) *uint64 {

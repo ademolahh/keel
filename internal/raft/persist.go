@@ -19,25 +19,38 @@ type Persister interface {
 	SaveLog(from uint64, entries []*proto.LogEntry) error
 
 	Load() (*proto.PersistentState, error)
+
+	ResetLog(base uint64, entries []*proto.LogEntry) error
+
+	SaveSnapshot(data []byte) error
+
+	LoadSnapshot() ([]byte, error)
 }
 
 type FilePersister struct {
-	statePath string
-	logPath   string
+	statePath    string
+	logPath      string
+	snapshotPath string
 
+	base    uint64
 	offsets []int64
 	size    int64
 	indexed bool
+	exists  bool
 }
 
-const recordHeader = 8
+const (
+	logHeader    = 8
+	recordHeader = 8
+)
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
-func NewFilePersister(dir string) *FilePersister {
+func NewFilePersister(dir, snapshotDir string) *FilePersister {
 	return &FilePersister{
-		statePath: filepath.Join(dir, "raft.state"),
-		logPath:   filepath.Join(dir, "raft.log"),
+		statePath:    filepath.Join(dir, "raft.state"),
+		logPath:      filepath.Join(dir, "raft.log"),
+		snapshotPath: filepath.Join(snapshotDir, "raft.snapshot"),
 	}
 }
 
@@ -50,6 +63,19 @@ func (p *FilePersister) SaveState(term uint64, votedFor *uint64) error {
 	return writeAtomic(p.statePath, data)
 }
 
+func (p *FilePersister) SaveSnapshot(data []byte) error {
+	return writeAtomic(p.snapshotPath, data)
+}
+
+func (p *FilePersister) LoadSnapshot() ([]byte, error) {
+	data, err := os.ReadFile(p.snapshotPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+
+	return data, err
+}
+
 func (p *FilePersister) SaveLog(from uint64, entries []*proto.LogEntry) error {
 	if !p.indexed {
 		if _, err := p.readLog(); err != nil {
@@ -57,49 +83,78 @@ func (p *FilePersister) SaveLog(from uint64, entries []*proto.LogEntry) error {
 		}
 	}
 
-	if from == 0 || from-1 > uint64(len(p.offsets)) {
-		return fmt.Errorf("save log from %d: %d entries saved", from, len(p.offsets))
-	}
-
-	start := p.size
-	if from-1 < uint64(len(p.offsets)) {
-		start = p.offsets[from-1]
-	}
-
-	var buf []byte
-	added := make([]int64, 0, len(entries))
-
-	for _, e := range entries {
-		data, err := protobuf.Marshal(e)
-		if err != nil {
+	if !p.exists {
+		if err := p.ResetLog(p.base, nil); err != nil {
 			return err
 		}
-
-		//  [length][crc][data]
-		added = append(added, start+int64(len(buf)))
-		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(data)))
-		buf = binary.LittleEndian.AppendUint32(buf, crc32.Checksum(data, castagnoli))
-		buf = append(buf, data...)
 	}
 
-	_, statErr := os.Stat(p.logPath)
-	created := errors.Is(statErr, os.ErrNotExist)
+	if from <= p.base || from-1-p.base > uint64(len(p.offsets)) {
+		return fmt.Errorf("save log from %d: entries %d to %d saved",
+			from, p.base+1, p.base+uint64(len(p.offsets)))
+	}
+
+	pos := from - 1 - p.base
+
+	start := p.size
+	if pos < uint64(len(p.offsets)) {
+		start = p.offsets[pos]
+	}
+
+	buf, added, err := encodeRecords(start, entries)
+	if err != nil {
+		return err
+	}
 
 	if err := p.writeLog(start, buf); err != nil {
 		p.indexed = false
 		return err
 	}
 
-	if created {
-		if err := syncDir(p.logPath); err != nil {
-			return err
-		}
-	}
-
-	p.offsets = append(p.offsets[:from-1], added...)
+	p.offsets = append(p.offsets[:pos], added...)
 	p.size = start + int64(len(buf))
 
 	return nil
+}
+
+func (p *FilePersister) ResetLog(base uint64, entries []*proto.LogEntry) error {
+	records, offsets, err := encodeRecords(logHeader, entries)
+	if err != nil {
+		return err
+	}
+
+	buf := binary.LittleEndian.AppendUint64(nil, base)
+	buf = append(buf, records...)
+
+	if err := writeAtomic(p.logPath, buf); err != nil {
+		p.indexed = false
+		return err
+	}
+
+	p.base, p.offsets, p.size = base, offsets, int64(len(buf))
+	p.indexed, p.exists = true, true
+
+	return nil
+}
+
+func encodeRecords(start int64, entries []*proto.LogEntry) ([]byte, []int64, error) {
+	var buf []byte
+	offsets := make([]int64, 0, len(entries))
+
+	for _, e := range entries {
+		data, err := protobuf.Marshal(e)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		//  [length][crc][data]
+		offsets = append(offsets, start+int64(len(buf)))
+		buf = binary.LittleEndian.AppendUint32(buf, uint32(len(data)))
+		buf = binary.LittleEndian.AppendUint32(buf, crc32.Checksum(data, castagnoli))
+		buf = append(buf, data...)
+	}
+
+	return buf, offsets, nil
 }
 
 func (p *FilePersister) writeLog(start int64, buf []byte) error {
@@ -136,11 +191,12 @@ func (p *FilePersister) Load() (*proto.PersistentState, error) {
 		return nil, err
 	}
 
-	if data == nil && logs == nil {
+	if data == nil && !p.exists {
 		return nil, nil
 	}
 
 	state.Logs = logs
+	state.LogBase = p.base
 
 	return &state, nil
 }
@@ -148,7 +204,8 @@ func (p *FilePersister) Load() (*proto.PersistentState, error) {
 func (p *FilePersister) readLog() ([]*proto.LogEntry, error) {
 	data, err := os.ReadFile(p.logPath)
 	if errors.Is(err, os.ErrNotExist) {
-		p.offsets, p.size, p.indexed = nil, 0, true
+		p.base, p.offsets, p.size = 0, nil, logHeader
+		p.indexed, p.exists = true, false
 		return nil, nil
 	}
 
@@ -156,10 +213,14 @@ func (p *FilePersister) readLog() ([]*proto.LogEntry, error) {
 		return nil, err
 	}
 
+	if len(data) < logHeader {
+		return nil, fmt.Errorf("log %s: header is %d bytes, want %d", p.logPath, len(data), logHeader)
+	}
+
 	var (
 		logs    []*proto.LogEntry
 		offsets []int64
-		pos     int64
+		pos     int64 = logHeader
 	)
 
 	for {
@@ -207,7 +268,8 @@ func (p *FilePersister) readLog() ([]*proto.LogEntry, error) {
 		}
 	}
 
-	p.offsets, p.size, p.indexed = offsets, pos, true
+	p.base, p.offsets, p.size = binary.LittleEndian.Uint64(data), offsets, pos
+	p.indexed, p.exists = true, true
 
 	return logs, nil
 }
@@ -258,23 +320,62 @@ func (r *Raft) persistState() {
 }
 
 func (r *Raft) persistLog(from uint64) {
-	if err := r.persister.SaveLog(from, r.logs[from-1:]); err != nil {
+	if err := r.persister.SaveLog(from, r.entriesFrom(from)); err != nil {
 		panic(fmt.Sprintf("persist: %v", err))
 	}
 }
 
 func (r *Raft) readPersist() error {
 	state, err := r.persister.Load()
-	if err != nil || state == nil {
+	if err != nil {
 		return err
 	}
 
-	r.currentTerm = state.CurrentTerm
-	r.votedFor = state.VotedFor
-
-	if state.Logs != nil {
-		r.logs = state.Logs
+	saved, err := r.persister.LoadSnapshot()
+	if err != nil {
+		return err
 	}
+
+	if state != nil {
+		r.currentTerm = state.CurrentTerm
+		r.votedFor = state.VotedFor
+		r.lastIncludedIndex = state.LogBase
+
+		if state.Logs != nil {
+			r.logs = state.Logs
+		}
+	}
+
+	if saved == nil {
+		if r.lastIncludedIndex != 0 {
+			return fmt.Errorf("log starts after entry %d but there is no snapshot", r.lastIncludedIndex)
+		}
+
+		return nil
+	}
+
+	var snapshot proto.Snapshot
+	if err := protobuf.Unmarshal(saved, &snapshot); err != nil {
+		return err
+	}
+
+	index := snapshot.LastIncludedIndex
+	if index < r.lastIncludedIndex {
+		return fmt.Errorf("snapshot ends at entry %d but the log starts after %d", index, r.lastIncludedIndex)
+	}
+
+	if index > r.lastIncludedIndex {
+		if index <= r.lastIndex() && r.termAt(index) == snapshot.LastIncludedTerm {
+			r.logs = append([]*proto.LogEntry(nil), r.entriesFrom(index+1)...)
+		} else {
+			r.logs = nil
+		}
+	}
+
+	r.lastIncludedIndex = index
+	r.lastIncludedTerm = snapshot.LastIncludedTerm
+	r.commitIndex = index
+	r.pendingSnapshot = &snapshot
 
 	return nil
 }

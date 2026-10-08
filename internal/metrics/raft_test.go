@@ -90,7 +90,7 @@ func newNode(t *testing.T, term uint64, entries int) *raft.Raft {
 		logs[i] = &proto.LogEntry{Term: term, Cmd: "set a=1"}
 	}
 
-	persister := raft.NewFilePersister(t.TempDir())
+	persister := raft.NewFilePersister(t.TempDir(), t.TempDir())
 	if err := persister.SaveState(term, nil); err != nil {
 		t.Fatalf("save state: %v", err)
 	}

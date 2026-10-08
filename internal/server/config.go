@@ -28,11 +28,15 @@ func newRaft(id uint64, sm raft.StateMachine, m *metrics.RaftCollector) (*raft.R
 	}
 
 	persistDir := filepath.Join(dir, "persist")
-	if err := os.MkdirAll(persistDir, 0o700); err != nil {
-		return nil, err
+	snapshotDir := filepath.Join(dir, "snapshot")
+
+	for _, d := range []string{persistDir, snapshotDir} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			return nil, err
+		}
 	}
 
-	persister := m.Persister(raft.NewFilePersister(persistDir))
+	persister := m.Persister(raft.NewFilePersister(persistDir, snapshotDir))
 
 	return raft.New(id, peers, sm, persister, grpc.WithChainUnaryInterceptor(m.Interceptor()))
 }

@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"maps"
 	"math/rand"
@@ -14,6 +15,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
+	protobuf "google.golang.org/protobuf/proto"
 )
 
 type RaftState int
@@ -27,6 +29,8 @@ const (
 
 type StateMachine interface {
 	Apply(cmd string) any
+	Snapshot() ([]byte, error)
+	Restore(data []byte) error
 }
 
 func (s RaftState) String() string {
@@ -52,6 +56,11 @@ type Raft struct {
 
 	commitIndex uint64
 	lastApplied uint64
+
+	lastIncludedIndex uint64
+	lastIncludedTerm  uint64
+	snapshotChunks    []byte
+	pendingSnapshot   *proto.Snapshot
 
 	nextIndex  map[uint64]uint64
 	matchIndex map[uint64]uint64
@@ -215,13 +224,8 @@ func (r *Raft) StartElection() {
 	votes := 1
 
 	peers := append([]peer(nil), r.peers...)
-	logs := append([]*proto.LogEntry(nil), r.logs...)
-	lastLogIndex := uint64(len(logs))
-	lastLogTerm := uint64(0)
-
-	if lastLogIndex > 0 {
-		lastLogTerm = logs[len(logs)-1].Term
-	}
+	lastLogIndex := r.lastIndex()
+	lastLogTerm := r.termAt(lastLogIndex)
 
 	r.mu.Unlock()
 
@@ -271,7 +275,7 @@ func (r *Raft) StartElection() {
 					r.log.Info("became leader", "term", term)
 
 					for _, p := range r.peers {
-						r.nextIndex[p.id] = uint64(len(r.logs)) + 1
+						r.nextIndex[p.id] = r.lastIndex() + 1
 						r.matchIndex[p.id] = 0
 
 						go func() {
@@ -359,9 +363,9 @@ func (r *Raft) Append(cmd string) bool {
 
 	term := r.currentTerm
 	r.logs = append(r.logs, &proto.LogEntry{Term: term, Cmd: cmd})
-	index := uint64(len(r.logs))
+	index := r.lastIndex()
 	r.persistLog(index)
-	peers := append([]peer(nil), r.peers...)
+	peers := slices.Clone(r.peers)
 	r.mu.Unlock()
 
 	for _, p := range peers {
@@ -383,7 +387,23 @@ func (r *Raft) Append(cmd string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	return r.logs[index-1].Term == term
+	return index >= r.lastIncludedIndex && r.termAt(index) == term
+}
+
+func (r *Raft) lastIndex() uint64 {
+	return r.lastIncludedIndex + uint64(len(r.logs))
+}
+
+func (r *Raft) termAt(index uint64) uint64 {
+	if index == r.lastIncludedIndex {
+		return r.lastIncludedTerm
+	}
+
+	return r.logs[index-r.lastIncludedIndex-1].Term
+}
+
+func (r *Raft) entriesFrom(index uint64) []*proto.LogEntry {
+	return r.logs[index-r.lastIncludedIndex-1:]
 }
 
 func (r *Raft) Read() error {
@@ -444,6 +464,60 @@ func (r *Raft) HeartBeat() {
 	}
 }
 
+const snapshotThreshold = 1024
+
+func (r *Raft) Snapshot() {
+	r.mu.Lock()
+	index, base := r.lastApplied, r.lastIncludedIndex
+
+	if r.pendingSnapshot != nil || index <= base {
+		r.mu.Unlock()
+		return
+	}
+
+	size := protobuf.Size(&proto.PersistentState{Logs: r.logs[:index-base]})
+	r.mu.Unlock()
+
+	if size <= snapshotThreshold {
+		return
+	}
+
+	data, err := r.stateMachine.Snapshot()
+	if err != nil {
+		r.log.Error("snapshot failed", "index", index, "err", err)
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.pendingSnapshot != nil || index <= r.lastIncludedIndex {
+		return
+	}
+
+	term := r.termAt(index)
+
+	saved, err := protobuf.Marshal(&proto.Snapshot{LastIncludedIndex: index, LastIncludedTerm: term, Data: data})
+	if err != nil {
+		r.log.Error("snapshot failed", "index", index, "err", err)
+		return
+	}
+
+	if err := r.persister.SaveSnapshot(saved); err != nil {
+		panic(fmt.Sprintf("persist: %v", err))
+	}
+
+	r.logs = append([]*proto.LogEntry(nil), r.entriesFrom(index+1)...)
+	r.lastIncludedIndex = index
+	r.lastIncludedTerm = term
+
+	if err := r.persister.ResetLog(index, r.logs); err != nil {
+		panic(fmt.Sprintf("persist: %v", err))
+	}
+
+	r.log.Info("saved snapshot", "index", index, "term", term, "log_bytes", size)
+}
+
 func (r *Raft) Apply() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
@@ -458,13 +532,31 @@ func (r *Raft) Apply() {
 
 		r.mu.Lock()
 
+		if snapshot := r.pendingSnapshot; snapshot != nil {
+			r.pendingSnapshot = nil
+			r.mu.Unlock()
+
+			if err := r.stateMachine.Restore(snapshot.Data); err != nil {
+				panic(fmt.Sprintf("restore snapshot: %v", err))
+			}
+
+			r.mu.Lock()
+			r.lastApplied = max(r.lastApplied, snapshot.LastIncludedIndex)
+			r.log.Info("restored snapshot", "index", snapshot.LastIncludedIndex, "term", snapshot.LastIncludedTerm)
+			close(r.applied)
+			r.applied = make(chan struct{})
+			r.mu.Unlock()
+			continue
+		}
+
 		if r.commitIndex <= r.lastApplied {
 			r.mu.Unlock()
 			continue
 		}
 
 		first := r.lastApplied + 1
-		entries := append([]*proto.LogEntry(nil), r.logs[r.lastApplied:r.commitIndex]...)
+		base := r.lastIncludedIndex
+		entries := append([]*proto.LogEntry(nil), r.logs[r.lastApplied-base:r.commitIndex-base]...)
 		r.mu.Unlock()
 
 		for _, e := range entries {
@@ -479,6 +571,8 @@ func (r *Raft) Apply() {
 		close(r.applied)
 		r.applied = make(chan struct{})
 		r.mu.Unlock()
+
+		r.Snapshot()
 	}
 }
 
@@ -504,17 +598,22 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 
 		prevLogIndex := max(r.nextIndex[p.id], 1) - 1
 
-		var prevLogTerm uint64
-		if prevLogIndex > 0 {
-			prevLogTerm = r.logs[prevLogIndex-1].Term
+		if prevLogIndex < r.lastIncludedIndex {
+			r.mu.Unlock()
+
+			if !r.sendSnapshot(ctx, p, term) {
+				return
+			}
+
+			continue
 		}
 
 		req := &proto.AppendEntriesRequest{
 			Term:         r.currentTerm,
 			LeaderId:     r.id,
 			PrevLogIndex: prevLogIndex,
-			PrevLogTerm:  prevLogTerm,
-			Entries:      append([]*proto.LogEntry(nil), r.logs[prevLogIndex:]...),
+			PrevLogTerm:  r.termAt(prevLogIndex),
+			Entries:      append([]*proto.LogEntry(nil), r.entriesFrom(prevLogIndex+1)...),
 			LeaderCommit: r.commitIndex,
 		}
 
@@ -563,9 +662,9 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			r.nextIndex[p.id] = sentIndex + 1
 			r.matchIndex[p.id] = sentIndex
 
-			n := match(r.matchIndex, uint64(len(r.logs)))[majority-1]
+			n := match(r.matchIndex, r.lastIndex())[majority-1]
 
-			if n > r.commitIndex && r.logs[n-1].Term == r.currentTerm {
+			if n > r.commitIndex && r.termAt(n) == r.currentTerm {
 				r.commitIndex = n
 				r.notifyCommit()
 				r.log.Debug("committed", "index", n)
@@ -575,6 +674,85 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 		}
 		r.mu.Unlock()
 	}
+}
+
+const snapshotChunkSize = 32 * 1024
+
+func (r *Raft) sendSnapshot(ctx context.Context, p peer, term uint64) bool {
+	r.mu.Lock()
+	saved, err := r.persister.LoadSnapshot()
+	r.mu.Unlock()
+
+	if err != nil || saved == nil {
+		r.log.Error("snapshot not loaded", "peer", p.id, "err", err)
+		return false
+	}
+
+	var snapshot proto.Snapshot
+	if err := protobuf.Unmarshal(saved, &snapshot); err != nil {
+		r.log.Error("snapshot not loaded", "peer", p.id, "err", err)
+		return false
+	}
+
+	for offset := 0; ; {
+		end := min(offset+snapshotChunkSize, len(snapshot.Data))
+
+		req := &proto.InstallSnapshotRequest{
+			Term:              term,
+			LeaderId:          r.id,
+			LastIncludedIndex: snapshot.LastIncludedIndex,
+			LastIncludedTerm:  snapshot.LastIncludedTerm,
+			Offset:            uint64(offset),
+			Data:              snapshot.Data[offset:end],
+			Done:              end == len(snapshot.Data),
+		}
+
+		res, err := p.client.InstallSnapshot(ctx, req)
+		if err != nil {
+			r.log.Debug("snapshot send failed", "peer", p.id, "err", err)
+
+			select {
+			case <-ctx.Done():
+				return false
+			case <-time.After(retryDelay):
+			}
+
+			return true
+		}
+
+		r.mu.Lock()
+		if res.Term > r.currentTerm {
+			r.state = Follower
+			r.currentTerm = res.Term
+			r.votedFor = nil
+			r.leaderId = 0
+			r.persistState()
+			r.log.Info("stepping down", "term", res.Term, "reason", "higher term in snapshot reply")
+			r.mu.Unlock()
+			return false
+		}
+
+		if r.id != r.leaderId || term != r.currentTerm {
+			r.mu.Unlock()
+			return false
+		}
+		r.mu.Unlock()
+
+		if req.Done {
+			break
+		}
+
+		offset = end
+	}
+
+	r.mu.Lock()
+	r.matchIndex[p.id] = max(r.matchIndex[p.id], snapshot.LastIncludedIndex)
+	r.nextIndex[p.id] = snapshot.LastIncludedIndex + 1
+	r.mu.Unlock()
+
+	r.log.Info("sent snapshot", "peer", p.id, "index", snapshot.LastIncludedIndex)
+
+	return true
 }
 
 func match(matchIndex map[uint64]uint64, leader uint64) []uint64 {

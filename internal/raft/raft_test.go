@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -943,6 +944,128 @@ func TestApply(t *testing.T) {
 	})
 }
 
+func TestSnapshot(t *testing.T) {
+	t.Run("saves a snapshot and drops the entries it covers once the applied log passes 1KB", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.stateMachine = &recorder{}
+		raft.logs = bigLogs(30, 2)
+		raft.commitIndex = 30
+
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
+
+		ok := waitFor(t, time.Second, func() bool {
+			raft.mu.Lock()
+			defer raft.mu.Unlock()
+
+			return raft.lastIncludedIndex == 30
+		})
+		if !ok {
+			t.Fatal("snapshot: expected one through entry 30")
+		}
+
+		raft.mu.Lock()
+		defer raft.mu.Unlock()
+
+		if len(raft.logs) != 0 || raft.lastIncludedTerm != 2 {
+			t.Errorf("log: expected no entries after term 2, got %d after term %d", len(raft.logs), raft.lastIncludedTerm)
+		}
+
+		if saved := savedSnapshot(t, raft); saved.LastIncludedIndex != 30 || saved.LastIncludedTerm != 2 {
+			t.Errorf("saved snapshot: expected index 30 term 2, got index %d term %d",
+				saved.LastIncludedIndex, saved.LastIncludedTerm)
+		}
+
+		if base := raft.persister.(*memoryPersister).state.LogBase; base != 30 {
+			t.Errorf("saved log: expected it to start after 30, got %d", base)
+		}
+	})
+
+	t.Run("keeps the log while it is 1KB or less", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.stateMachine = &recorder{}
+		raft.logs = bigLogs(10, 1)
+		raft.commitIndex = 10
+
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		if err := raft.waitApplied(ctx, 10); err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+
+		time.Sleep(50 * time.Millisecond)
+
+		raft.mu.Lock()
+		defer raft.mu.Unlock()
+
+		if raft.lastIncludedIndex != 0 || len(raft.logs) != 10 {
+			t.Errorf("log: expected 10 entries and no snapshot, got %d after %d", len(raft.logs), raft.lastIncludedIndex)
+		}
+	})
+}
+
+func TestSendSnapshot(t *testing.T) {
+	t.Run("brings a follower behind the snapshot up to date", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+
+		store := kv.NewKV()
+		store.Apply(`{"Op":"set","key":"a","value":"1"}`)
+		data, err := store.Snapshot()
+		if err != nil {
+			t.Fatalf("snapshot: %v", err)
+		}
+
+		r := nodes[DEFAULT_LEADER_ID].raft
+		r.mu.Lock()
+		r.state = Leader
+		r.leaderId = r.id
+		r.currentTerm = 3
+		r.lastIncludedIndex, r.lastIncludedTerm = 4, 3
+		r.logs = []*proto.LogEntry{{Term: 3, Cmd: "set e=5"}}
+		r.commitIndex, r.lastApplied = 4, 4
+		r.persister.(*memoryPersister).snapshot = snapshotBytes(t, &proto.Snapshot{
+			LastIncludedIndex: 4, LastIncludedTerm: 3, Data: data,
+		})
+		for _, p := range r.peers {
+			r.nextIndex[p.id] = 1
+			r.matchIndex[p.id] = 0
+		}
+		r.mu.Unlock()
+
+		if !r.Append("set f=6") {
+			t.Fatal("append: expected true, got false")
+		}
+
+		for _, id := range []uint64{2, 3} {
+			follower := nodes[id].raft
+
+			ok := waitFor(t, time.Second, func() bool {
+				follower.mu.Lock()
+				defer follower.mu.Unlock()
+
+				return follower.lastIncludedIndex == 4 && follower.lastIndex() == 6
+			})
+			if !ok {
+				t.Errorf("node %d: expected the snapshot through 4 and entries to 6", id)
+				continue
+			}
+
+			waitFor(t, time.Second, func() bool {
+				_, found := follower.stateMachine.(*kv.KV).Get("a")
+				return found
+			})
+
+			if value, _ := follower.stateMachine.(*kv.KV).Get("a"); value != "1" {
+				t.Errorf("node %d: expected a=1 from the snapshot, got %q", id, value)
+			}
+		}
+	})
+}
+
 func TestStatus(t *testing.T) {
 	t.Run("returns copies the caller cannot change the node through", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
@@ -1038,7 +1161,7 @@ func TestMajority(t *testing.T) {
 
 func TestPersist(t *testing.T) {
 	t.Run("restores term, vote and log after a restart", func(t *testing.T) {
-		persister := NewFilePersister(t.TempDir())
+		persister := NewFilePersister(t.TempDir(), t.TempDir())
 		peers := map[uint64]string{1: "localhost:0", 2: "localhost:0"}
 
 		before, err := New(1, peers, &kv.KV{}, persister)
@@ -1065,6 +1188,98 @@ func TestPersist(t *testing.T) {
 
 		if len(after.logs) != 2 {
 			t.Errorf("log size: expected 2, got %d", len(after.logs))
+		}
+	})
+}
+
+func TestRestart(t *testing.T) {
+	peers := map[uint64]string{1: "localhost:0", 2: "localhost:0"}
+
+	t.Run("loads the snapshot and the log after it", func(t *testing.T) {
+		dir := t.TempDir()
+
+		before, err := New(1, peers, &kv.KV{}, NewFilePersister(dir, dir))
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+
+		before.InstallSnapshot(context.Background(), snapshotRequest(3, 4, 3, "state"))
+		entry := &proto.LogEntry{Term: 3, Cmd: "set x=1"}
+		before.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, LeaderId: 2, PrevLogIndex: 4, PrevLogTerm: 3, Entries: []*proto.LogEntry{entry},
+		})
+
+		sm := &recorder{}
+		after, err := New(1, peers, sm, NewFilePersister(dir, dir))
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+
+		if after.lastIncludedIndex != 4 || after.lastIncludedTerm != 3 || after.commitIndex != 4 {
+			t.Errorf("snapshot: expected index 4 term 3 commit 4, got index %d term %d commit %d",
+				after.lastIncludedIndex, after.lastIncludedTerm, after.commitIndex)
+		}
+
+		assertEntries(t, after.logs, []*proto.LogEntry{entry})
+
+		go after.Apply()
+		t.Cleanup(after.Kill)
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		if err := after.waitApplied(ctx, 4); err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+
+		sm.mu.Lock()
+		defer sm.mu.Unlock()
+
+		if string(sm.restored) != "state" {
+			t.Errorf("restored: expected %q, got %q", "state", sm.restored)
+		}
+	})
+
+	t.Run("keeps entries after a matching snapshot saved just before a crash", func(t *testing.T) {
+		dir := t.TempDir()
+		p := NewFilePersister(dir, dir)
+		p.SaveLog(1, makeLogs())
+		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 2}))
+
+		raft, err := New(1, peers, &kv.KV{}, NewFilePersister(dir, dir))
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+
+		assertEntries(t, raft.logs, makeLogs()[3:])
+
+		if raft.lastIndex() != 5 {
+			t.Errorf("last index: expected 5, got %d", raft.lastIndex())
+		}
+	})
+
+	t.Run("drops the log when the snapshot saved just before a crash does not match it", func(t *testing.T) {
+		dir := t.TempDir()
+		p := NewFilePersister(dir, dir)
+		p.SaveLog(1, makeLogs())
+		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 3}))
+
+		raft, err := New(1, peers, &kv.KV{}, NewFilePersister(dir, dir))
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+
+		if len(raft.logs) != 0 || raft.lastIndex() != 3 {
+			t.Errorf("log: expected no entries after 3, got %d after %d", len(raft.logs), raft.lastIncludedIndex)
+		}
+	})
+
+	t.Run("fails when the log starts after an entry and there is no snapshot", func(t *testing.T) {
+		dir := t.TempDir()
+		NewFilePersister(dir, dir).ResetLog(4, nil)
+
+		if _, err := New(1, peers, &kv.KV{}, NewFilePersister(dir, dir)); err == nil {
+			t.Error("new: expected an error, got none")
 		}
 	})
 }
@@ -1106,8 +1321,37 @@ func TestRaftState(t *testing.T) {
 // memoryPersister keeps the state in memory. Cluster nodes can outlive their
 // test briefly, and this way their late saves never hit a removed directory.
 type memoryPersister struct {
-	mu    sync.Mutex
-	state *proto.PersistentState
+	mu       sync.Mutex
+	state    *proto.PersistentState
+	snapshot []byte
+}
+
+func (p *memoryPersister) SaveSnapshot(data []byte) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.snapshot = append([]byte(nil), data...)
+	return nil
+}
+
+func (p *memoryPersister) LoadSnapshot() ([]byte, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.snapshot, nil
+}
+
+func (p *memoryPersister) ResetLog(base uint64, entries []*proto.LogEntry) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.state == nil {
+		p.state = &proto.PersistentState{}
+	}
+
+	p.state.LogBase = base
+	p.state.Logs = append([]*proto.LogEntry(nil), entries...)
+	return nil
 }
 
 func (p *memoryPersister) SaveState(term uint64, votedFor *uint64) error {
@@ -1130,7 +1374,7 @@ func (p *memoryPersister) SaveLog(from uint64, entries []*proto.LogEntry) error 
 		p.state = &proto.PersistentState{}
 	}
 
-	keep := min(int(from-1), len(p.state.Logs))
+	keep := max(0, min(int(from-1)-int(p.state.LogBase), len(p.state.Logs)))
 	p.state.Logs = append(p.state.Logs[:keep:keep], entries...)
 	return nil
 }
@@ -1148,8 +1392,17 @@ func (p *memoryPersister) Load() (*proto.PersistentState, error) {
 
 // recorder is a state machine that remembers the commands applied to it.
 type recorder struct {
-	mu   sync.Mutex
-	cmds []string
+	mu       sync.Mutex
+	cmds     []string
+	restored []byte
+}
+
+func (s *recorder) Restore(data []byte) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.restored = append([]byte(nil), data...)
+	return nil
 }
 
 func (s *recorder) Apply(cmd string) any {
@@ -1160,11 +1413,24 @@ func (s *recorder) Apply(cmd string) any {
 	return nil
 }
 
+func (s *recorder) Snapshot() ([]byte, error) {
+	return []byte(""), nil
+}
+
 func (s *recorder) applied() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	return append([]string(nil), s.cmds...)
+}
+
+func bigLogs(n int, term uint64) []*proto.LogEntry {
+	logs := make([]*proto.LogEntry, n)
+	for i := range logs {
+		logs[i] = &proto.LogEntry{Term: term, Cmd: fmt.Sprintf("set key-%02d=%s", i, strings.Repeat("v", 28))}
+	}
+
+	return logs
 }
 
 func uint64Ptr(v uint64) *uint64 {

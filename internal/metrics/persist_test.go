@@ -89,6 +89,23 @@ func (p *stubPersister) Load() (*proto.PersistentState, error) {
 	return &p.state, nil
 }
 
+func (p *stubPersister) SaveSnapshot([]byte) error {
+	return p.err
+}
+
+func (p *stubPersister) ResetLog(base uint64, entries []*proto.LogEntry) error {
+	if p.err != nil {
+		return p.err
+	}
+
+	p.state.LogBase, p.state.Logs = base, entries
+	return nil
+}
+
+func (p *stubPersister) LoadSnapshot() ([]byte, error) {
+	return nil, p.err
+}
+
 // sampleCount is how many observations o has recorded.
 func sampleCount(t *testing.T, o prometheus.Observer) uint64 {
 	t.Helper()

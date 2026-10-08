@@ -3,8 +3,10 @@ package raft
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/ademolahh/keel/proto"
+	protobuf "google.golang.org/protobuf/proto"
 )
 
 func TestRequestVote(t *testing.T) {
@@ -539,7 +541,254 @@ func TestAppendEntries(t *testing.T) {
 	})
 }
 
-func TestInstallSnapshot(t *testing.T) {}
+func TestInstallSnapshot(t *testing.T) {
+	t.Run("rejects a snapshot from a stale leader", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+
+		res, _ := raft.InstallSnapshot(context.Background(), snapshotRequest(2, 4, 2, "state"))
+
+		if res.Term != 3 {
+			t.Errorf("reply term: expected 3, got %d", res.Term)
+		}
+
+		if raft.lastIncludedIndex != 0 || raft.persister.(*memoryPersister).snapshot != nil {
+			t.Error("snapshot: expected none installed")
+		}
+	})
+
+	t.Run("adopts a newer term and follows the sender", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 1
+		raft.votedFor = uint64Ptr(1)
+		raft.state = Candidate
+
+		raft.InstallSnapshot(context.Background(), snapshotRequest(4, 3, 2, "state"))
+
+		if raft.currentTerm != 4 || raft.votedFor != nil {
+			t.Errorf("term and vote: expected 4 and none, got %d and %v", raft.currentTerm, raft.votedFor)
+		}
+
+		if raft.state != Follower || raft.leaderId != 2 {
+			t.Errorf("state: expected a follower of 2, got %s following %d", raft.state, raft.leaderId)
+		}
+	})
+
+	t.Run("waits for the last chunk before installing", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+
+		first := snapshotRequest(3, 4, 3, "sta")
+		first.Done = false
+		raft.InstallSnapshot(context.Background(), first)
+
+		if raft.lastIncludedIndex != 0 {
+			t.Fatalf("last included index: expected 0 before the last chunk, got %d", raft.lastIncludedIndex)
+		}
+
+		last := snapshotRequest(3, 4, 3, "te")
+		last.Offset = 3
+		raft.InstallSnapshot(context.Background(), last)
+
+		if got := string(savedSnapshot(t, raft).Data); got != "state" {
+			t.Errorf("snapshot data: expected %q, got %q", "state", got)
+		}
+	})
+
+	t.Run("ignores a chunk at the wrong offset", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+
+		chunk := snapshotRequest(3, 4, 3, "te")
+		chunk.Offset = 3
+		raft.InstallSnapshot(context.Background(), chunk)
+
+		if raft.lastIncludedIndex != 0 || len(raft.snapshotChunks) != 0 {
+			t.Error("snapshot: expected the chunk to be dropped")
+		}
+	})
+
+	t.Run("discards the whole log when it lacks the last included entry", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()[:2]
+
+		raft.InstallSnapshot(context.Background(), snapshotRequest(3, 4, 3, "state"))
+
+		if len(raft.logs) != 0 {
+			t.Errorf("log size: expected 0, got %d", len(raft.logs))
+		}
+
+		if raft.lastIndex() != 4 || raft.termAt(4) != 3 {
+			t.Errorf("last entry: expected index 4 term 3, got index %d term %d", raft.lastIndex(), raft.termAt(raft.lastIndex()))
+		}
+
+		if raft.commitIndex != 4 || raft.pendingSnapshot == nil {
+			t.Errorf("commit index and restore: expected 4 and a pending restore, got %d and %v",
+				raft.commitIndex, raft.pendingSnapshot)
+		}
+
+		if saved := savedSnapshot(t, raft); saved.LastIncludedIndex != 4 || saved.LastIncludedTerm != 3 {
+			t.Errorf("saved snapshot: expected index 4 term 3, got index %d term %d",
+				saved.LastIncludedIndex, saved.LastIncludedTerm)
+		}
+
+		if logs := raft.persister.(*memoryPersister).state.Logs; len(logs) != 0 {
+			t.Errorf("saved log size: expected 0, got %d", len(logs))
+		}
+	})
+
+	t.Run("keeps the entries after a matching last included entry", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()
+
+		raft.InstallSnapshot(context.Background(), snapshotRequest(3, 3, 2, "state"))
+
+		assertEntries(t, raft.logs, makeLogs()[3:])
+
+		if raft.lastIndex() != 5 {
+			t.Errorf("last index: expected 5, got %d", raft.lastIndex())
+		}
+
+		assertEntries(t, raft.persister.(*memoryPersister).state.Logs, makeLogs()[3:])
+	})
+
+	t.Run("ignores a snapshot it has already committed past", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()
+		raft.commitIndex = 4
+
+		raft.InstallSnapshot(context.Background(), snapshotRequest(3, 3, 2, "state"))
+
+		if raft.lastIncludedIndex != 0 || len(raft.logs) != 5 {
+			t.Errorf("log: expected it untouched, got base %d and %d entries", raft.lastIncludedIndex, len(raft.logs))
+		}
+	})
+
+	t.Run("restores the state machine through Apply", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		sm := &recorder{}
+		raft.stateMachine = sm
+		raft.currentTerm = 3
+
+		go raft.Apply()
+		t.Cleanup(raft.Kill)
+
+		raft.InstallSnapshot(context.Background(), snapshotRequest(3, 4, 3, "state"))
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		if err := raft.waitApplied(ctx, 4); err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+
+		sm.mu.Lock()
+		defer sm.mu.Unlock()
+
+		if string(sm.restored) != "state" {
+			t.Errorf("restored: expected %q, got %q", "state", sm.restored)
+		}
+	})
+}
+
+func TestLogOffset(t *testing.T) {
+	t.Run("appends after the last included entry", func(t *testing.T) {
+		raft := followerWithSnapshot(t)
+		entry := &proto.LogEntry{Term: 3, Cmd: "set x=1"}
+
+		res, _ := raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, LeaderId: 2, PrevLogIndex: 4, PrevLogTerm: 3, Entries: []*proto.LogEntry{entry},
+		})
+
+		if !res.Success {
+			t.Fatal("append: expected success")
+		}
+
+		assertEntries(t, raft.logs, []*proto.LogEntry{entry})
+
+		if raft.lastIndex() != 5 {
+			t.Errorf("last index: expected 5, got %d", raft.lastIndex())
+		}
+	})
+
+	t.Run("skips entries the snapshot already covers", func(t *testing.T) {
+		raft := followerWithSnapshot(t)
+		entry := &proto.LogEntry{Term: 3, Cmd: "set x=1"}
+
+		res, _ := raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, LeaderId: 2, PrevLogIndex: 2, PrevLogTerm: 1,
+			Entries: append(makeLogs()[2:4], entry),
+		})
+
+		if !res.Success {
+			t.Fatal("append: expected success")
+		}
+
+		assertEntries(t, raft.logs, []*proto.LogEntry{entry})
+	})
+
+	t.Run("compares votes against the last included entry", func(t *testing.T) {
+		raft := followerWithSnapshot(t)
+
+		res, _ := raft.RequestVote(context.Background(), &proto.RequestVoteRequest{
+			Term: 4, CandidateId: 2, LastLogIndex: 6, LastLogTerm: 2,
+		})
+
+		if res.VoteGranted {
+			t.Error("vote: expected a candidate with an older last term to be refused")
+		}
+	})
+}
+
+func snapshotRequest(term, index, lastTerm uint64, data string) *proto.InstallSnapshotRequest {
+	return &proto.InstallSnapshotRequest{
+		Term: term, LeaderId: 2, LastIncludedIndex: index, LastIncludedTerm: lastTerm,
+		Data: []byte(data), Done: true,
+	}
+}
+
+func savedSnapshot(t *testing.T, raft *Raft) *proto.Snapshot {
+	t.Helper()
+
+	data := raft.persister.(*memoryPersister).snapshot
+	if data == nil {
+		t.Fatal("snapshot: expected one saved, got none")
+	}
+
+	var snapshot proto.Snapshot
+	if err := protobuf.Unmarshal(data, &snapshot); err != nil {
+		t.Fatalf("unmarshal snapshot: %v", err)
+	}
+
+	return &snapshot
+}
+
+func followerWithSnapshot(t *testing.T) *Raft {
+	t.Helper()
+
+	raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+	raft.currentTerm = 3
+	raft.InstallSnapshot(context.Background(), snapshotRequest(3, 4, 3, "state"))
+
+	return raft
+}
+
+func assertEntries(t *testing.T, got, want []*proto.LogEntry) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("entries: expected %d, got %d", len(want), len(got))
+	}
+
+	for i := range want {
+		if !protobuf.Equal(got[i], want[i]) {
+			t.Errorf("entry %d: expected %v, got %v", i, want[i], got[i])
+		}
+	}
+}
 
 func TestGetMatchingTermIndex(t *testing.T) {
 	// makeLogs holds terms 1, 1, 2, 3, 3 at positions 1 to 5
