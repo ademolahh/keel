@@ -1330,7 +1330,7 @@ func (p *memoryPersister) SaveSnapshot(data []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.snapshot = append([]byte(nil), data...)
+	p.snapshot = slices.Clone(data)
 	return nil
 }
 
@@ -1350,7 +1350,7 @@ func (p *memoryPersister) ResetLog(base uint64, entries []*proto.LogEntry) error
 	}
 
 	p.state.LogBase = base
-	p.state.Logs = append([]*proto.LogEntry(nil), entries...)
+	p.state.Logs = slices.Clone(entries)
 	return nil
 }
 
@@ -1401,7 +1401,7 @@ func (s *recorder) Restore(data []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.restored = append([]byte(nil), data...)
+	s.restored = slices.Clone(data)
 	return nil
 }
 
@@ -1421,7 +1421,7 @@ func (s *recorder) applied() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return append([]string(nil), s.cmds...)
+	return slices.Clone(s.cmds)
 }
 
 func bigLogs(n int, term uint64) []*proto.LogEntry {

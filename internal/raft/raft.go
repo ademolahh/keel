@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
-	"math/rand"
 	"slices"
 	"sync"
 	"time"
@@ -223,7 +221,7 @@ func (r *Raft) StartElection() {
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 	votes := 1
 
-	peers := append([]peer(nil), r.peers...)
+	peers := slices.Clone(r.peers)
 	lastLogIndex := r.lastIndex()
 	lastLogTerm := r.termAt(lastLogIndex)
 
@@ -292,63 +290,6 @@ func (r *Raft) StartElection() {
 	}
 }
 
-func (r *Raft) IsLeader() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return r.state == Leader
-}
-
-func (r *Raft) Status() Status {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	s := Status{
-		Term: r.currentTerm,
-		Logs: append([]*proto.LogEntry(nil), r.logs...),
-	}
-
-	if r.votedFor != nil {
-		s.VotedFor = new(*r.votedFor)
-	}
-
-	return s
-}
-
-func (r *Raft) Stats() Stats {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	s := Stats{
-		Term:          r.currentTerm,
-		State:         r.state,
-		CommitIndex:   r.commitIndex,
-		LastApplied:   r.lastApplied,
-		LogEntries:    uint64(len(r.logs)),
-		LeaderChanges: r.leaderChanges,
-	}
-
-	if r.state == Leader {
-		s.MatchIndex = maps.Clone(r.matchIndex)
-	}
-
-	return s
-}
-
-func (r *Raft) CaughtUp() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return r.lastApplied >= r.commitIndex
-}
-
-func (r *Raft) Leader() (uint64, bool) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return r.leaderId, r.leaderId != 0
-}
-
 var (
 	ErrNotLeader = errors.New("not the leader")
 	ErrNoQuorum  = errors.New("could not reach a majority")
@@ -390,22 +331,6 @@ func (r *Raft) Append(cmd string) bool {
 	return index >= r.lastIncludedIndex && r.termAt(index) == term
 }
 
-func (r *Raft) lastIndex() uint64 {
-	return r.lastIncludedIndex + uint64(len(r.logs))
-}
-
-func (r *Raft) termAt(index uint64) uint64 {
-	if index == r.lastIncludedIndex {
-		return r.lastIncludedTerm
-	}
-
-	return r.logs[index-r.lastIncludedIndex-1].Term
-}
-
-func (r *Raft) entriesFrom(index uint64) []*proto.LogEntry {
-	return r.logs[index-r.lastIncludedIndex-1:]
-}
-
 func (r *Raft) Read() error {
 	if !r.IsLeader() {
 		return ErrNotLeader
@@ -418,35 +343,9 @@ func (r *Raft) Read() error {
 	return nil
 }
 
-func (r *Raft) waitApplied(ctx context.Context, index uint64) error {
-	for {
-		r.mu.Lock()
-		done := r.lastApplied >= index
-		applied := r.applied
-		r.mu.Unlock()
-
-		if done {
-			return nil
-		}
-
-		select {
-		case <-applied:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-}
-
-func (r *Raft) notifyCommit() {
-	select {
-	case r.commitCh <- struct{}{}:
-	default:
-	}
-}
-
 func (r *Raft) HeartBeat() {
 	r.mu.Lock()
-	peers := append([]peer(nil), r.peers...)
+	peers := slices.Clone(r.peers)
 	state := r.state
 	r.mu.Unlock()
 
@@ -507,7 +406,7 @@ func (r *Raft) Snapshot() {
 		panic(fmt.Sprintf("persist: %v", err))
 	}
 
-	r.logs = append([]*proto.LogEntry(nil), r.entriesFrom(index+1)...)
+	r.logs = slices.Clone(r.entriesFrom(index + 1))
 	r.lastIncludedIndex = index
 	r.lastIncludedTerm = term
 
@@ -556,7 +455,7 @@ func (r *Raft) Apply() {
 
 		first := r.lastApplied + 1
 		base := r.lastIncludedIndex
-		entries := append([]*proto.LogEntry(nil), r.logs[r.lastApplied-base:r.commitIndex-base]...)
+		entries := slices.Clone(r.logs[r.lastApplied-base : r.commitIndex-base])
 		r.mu.Unlock()
 
 		for _, e := range entries {
@@ -613,7 +512,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			LeaderId:     r.id,
 			PrevLogIndex: prevLogIndex,
 			PrevLogTerm:  r.termAt(prevLogIndex),
-			Entries:      append([]*proto.LogEntry(nil), r.entriesFrom(prevLogIndex+1)...),
+			Entries:      slices.Clone(r.entriesFrom(prevLogIndex + 1)),
 			LeaderCommit: r.commitIndex,
 		}
 
@@ -753,34 +652,4 @@ func (r *Raft) sendSnapshot(ctx context.Context, p peer, term uint64) bool {
 	r.log.Info("sent snapshot", "peer", p.id, "index", snapshot.LastIncludedIndex)
 
 	return true
-}
-
-func match(matchIndex map[uint64]uint64, leader uint64) []uint64 {
-	index := []uint64{}
-	for _, idx := range matchIndex {
-		index = append(index, idx)
-	}
-
-	index = append(index, leader)
-
-	slices.SortFunc(index, func(a, b uint64) int {
-		return int(b - a)
-	})
-
-	return index
-}
-
-func majority(size int) int {
-	return ((size + 1) / 2) + 1
-}
-
-const (
-	electionTimeoutMin = 100 * time.Millisecond
-	electionTimeoutMax = 300 * time.Millisecond
-)
-
-func randomElectionTimeout() time.Duration {
-	spread := int64(electionTimeoutMax - electionTimeoutMin)
-
-	return electionTimeoutMin + time.Duration(rand.Int63n(spread+1))
 }

@@ -3,6 +3,7 @@ package raft
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/ademolahh/keel/proto"
@@ -255,7 +256,7 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 	}
 
 	if snapshot.LastIncludedIndex <= r.lastIndex() && r.termAt(snapshot.LastIncludedIndex) == snapshot.LastIncludedTerm {
-		r.logs = append([]*proto.LogEntry(nil), r.entriesFrom(snapshot.LastIncludedIndex+1)...)
+		r.logs = slices.Clone(r.entriesFrom(snapshot.LastIncludedIndex + 1))
 	} else {
 		r.logs = nil
 	}
@@ -274,17 +275,4 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 		"kept_entries", len(r.logs))
 
 	return reply, nil
-}
-
-func getMatchingTermIndex(logs []*proto.LogEntry, term uint64, prevLogIndex int) *uint64 {
-	if prevLogIndex > len(logs) {
-		prevLogIndex = len(logs)
-	}
-
-	for i := prevLogIndex - 1; i >= 0; i-- {
-		if logs[i].Term == term {
-			return new(uint64(i) + 1)
-		}
-	}
-	return nil
 }

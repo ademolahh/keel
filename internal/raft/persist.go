@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/ademolahh/keel/proto"
 	protobuf "google.golang.org/protobuf/proto"
@@ -366,7 +367,7 @@ func (r *Raft) readPersist() error {
 
 	if index > r.lastIncludedIndex {
 		if index <= r.lastIndex() && r.termAt(index) == snapshot.LastIncludedTerm {
-			r.logs = append([]*proto.LogEntry(nil), r.entriesFrom(index+1)...)
+			r.logs = slices.Clone(r.entriesFrom(index + 1))
 		} else {
 			r.logs = nil
 		}
