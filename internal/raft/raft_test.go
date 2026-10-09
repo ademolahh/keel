@@ -510,6 +510,32 @@ func TestRead(t *testing.T) {
 }
 
 func TestReplicate(t *testing.T) {
+	t.Run("waits a full election timeout after stepping down", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.mu.Lock()
+		leader.state = Leader
+		leader.leaderId = leader.id
+		leader.currentTerm = 1
+		leader.electionDeadline = time.Now().Add(-time.Second)
+		leader.initNextIndex()
+		leader.initMatchIndex()
+		leader.mu.Unlock()
+
+		follower := nodes[2].raft
+		follower.mu.Lock()
+		follower.currentTerm = 2
+		follower.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		before := time.Now()
+		leader.replicate(ctx, peerOf(leader, 2))
+
+		assertFreshDeadline(t, leader, before)
+	})
+
 	t.Run("keeps a newer term when a late reply carries an older one", func(t *testing.T) {
 		const lag = 200 * time.Millisecond
 
@@ -1116,6 +1142,59 @@ func TestSendSnapshot(t *testing.T) {
 	})
 }
 
+func TestStepDown(t *testing.T) {
+	t.Run("waits a full election timeout after a vote reply with a higher term", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		for _, id := range []uint64{2, 3} {
+			n := nodes[id].raft
+			n.mu.Lock()
+			n.currentTerm = 5
+			n.mu.Unlock()
+		}
+
+		candidate := nodes[DEFAULT_LEADER_ID].raft
+		before := time.Now()
+		candidate.StartElection()
+
+		ok := waitFor(t, time.Second, func() bool {
+			_, term, _ := snapshot(candidate)
+			return term == 5
+		})
+		if !ok {
+			t.Fatal("term: expected the candidate to adopt term 5")
+		}
+
+		assertFreshDeadline(t, candidate, before)
+	})
+
+	t.Run("waits a full election timeout after a snapshot reply with a higher term", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		leader := nodes[DEFAULT_LEADER_ID].raft
+		leader.mu.Lock()
+		leader.state = Leader
+		leader.leaderId = leader.id
+		leader.currentTerm = 1
+		leader.electionDeadline = time.Now().Add(-time.Second)
+		leader.snapshot = &proto.Snapshot{LastIncludedIndex: 4, LastIncludedTerm: 1}
+		leader.mu.Unlock()
+
+		follower := nodes[2].raft
+		follower.mu.Lock()
+		follower.currentTerm = 2
+		follower.mu.Unlock()
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		before := time.Now()
+		if leader.sendSnapshot(ctx, peerOf(leader, 2), 1) {
+			t.Fatal("send: expected false after stepping down")
+		}
+
+		assertFreshDeadline(t, leader, before)
+	})
+}
+
 func TestStatus(t *testing.T) {
 	t.Run("returns copies the caller cannot change the node through", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
@@ -1476,6 +1555,22 @@ func (s *recorder) applied() []string {
 	defer s.mu.Unlock()
 
 	return slices.Clone(s.cmds)
+}
+
+func assertFreshDeadline(t *testing.T, r *Raft, before time.Time) {
+	t.Helper()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state == Leader {
+		t.Errorf("state: expected to have stepped down, got %s", r.state)
+	}
+
+	if r.electionDeadline.Before(before.Add(electionTimeoutMin)) {
+		t.Errorf("election deadline: expected at least %v after stepping down, got %v",
+			electionTimeoutMin, r.electionDeadline.Sub(before))
+	}
 }
 
 func bigLogs(n int, term uint64) []*proto.LogEntry {

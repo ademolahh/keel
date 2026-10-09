@@ -242,6 +242,7 @@ func (r *Raft) StartElection() {
 				r.state = Follower
 				r.votedFor = nil
 				r.leaderId = 0
+				r.electionDeadline = time.Now().Add(randomElectionTimeout())
 				r.persistState()
 				r.log.Info("stepping down", "term", res.Term, "reason", "higher term in vote reply")
 			}
@@ -528,6 +529,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			r.currentTerm = res.Term
 			r.votedFor = nil
 			r.leaderId = 0
+			r.electionDeadline = time.Now().Add(randomElectionTimeout())
 			r.persistState()
 			r.log.Info("stepping down", "term", res.Term, "reason", "higher term in append reply")
 			r.mu.Unlock()
@@ -609,6 +611,7 @@ func (r *Raft) sendSnapshot(ctx context.Context, p peer, term uint64) bool {
 			r.currentTerm = res.Term
 			r.votedFor = nil
 			r.leaderId = 0
+			r.electionDeadline = time.Now().Add(randomElectionTimeout())
 			r.persistState()
 			r.log.Info("stepping down", "term", res.Term, "reason", "higher term in snapshot reply")
 			r.mu.Unlock()
