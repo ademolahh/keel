@@ -39,6 +39,14 @@ func (p *timedPersister) SaveState(term uint64, votedFor *uint64) error {
 	return err
 }
 
+func (p *timedPersister) Sync() error {
+	start := time.Now()
+	err := p.Persister.Sync()
+	p.duration.Observe(time.Since(start).Seconds())
+
+	return err
+}
+
 func (p *timedPersister) SaveLog(from uint64, entries []*proto.LogEntry) error {
 	start := time.Now()
 	err := p.Persister.SaveLog(from, entries)

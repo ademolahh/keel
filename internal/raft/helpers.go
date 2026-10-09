@@ -126,6 +126,57 @@ func (r *Raft) waitApplied(ctx context.Context, index uint64) error {
 	}
 }
 
+func (r *Raft) waitSynced(ctx context.Context, index uint64) error {
+	for {
+		r.mu.Lock()
+		done := r.syncedIndex >= index
+		synced := r.synced
+		r.mu.Unlock()
+
+		if done {
+			return nil
+		}
+
+		select {
+		case <-synced:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (r *Raft) notifySync() {
+	select {
+	case r.syncCh <- struct{}{}:
+	default:
+	}
+}
+
+func (r *Raft) markSynced(index uint64) {
+	r.syncedIndex = index
+	close(r.synced)
+	r.synced = make(chan struct{})
+}
+
+func (r *Raft) advanceCommit() {
+	if r.state != Leader {
+		return
+	}
+
+	acked := make(map[uint64]uint64, len(r.peers))
+	for _, p := range r.peers {
+		acked[p.id] = r.matchIndex[p.id]
+	}
+
+	n := match(acked, r.syncedIndex)[majority(len(r.peers))-1]
+
+	if n > r.commitIndex && r.termAt(n) == r.currentTerm {
+		r.commitIndex = n
+		r.notifyCommit()
+		r.log.Debug("committed", "index", n)
+	}
+}
+
 func (r *Raft) notifyCommit() {
 	select {
 	case r.commitCh <- struct{}{}:

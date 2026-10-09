@@ -26,6 +26,8 @@ type Persister interface {
 	SaveSnapshot(data []byte) error
 
 	LoadSnapshot() ([]byte, error)
+
+	Sync() error
 }
 
 type FilePersister struct {
@@ -172,6 +174,20 @@ func (p *FilePersister) writeLog(start int64, buf []byte) error {
 	if _, err := f.WriteAt(buf, start); err != nil {
 		return err
 	}
+
+	return nil
+}
+
+func (p *FilePersister) Sync() error {
+	f, err := os.OpenFile(p.logPath, os.O_RDWR, 0)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+	defer f.Close()
 
 	return f.Sync()
 }
@@ -324,6 +340,22 @@ func (r *Raft) persistLog(from uint64) {
 	if err := r.persister.SaveLog(from, r.entriesFrom(from)); err != nil {
 		panic(fmt.Sprintf("persist: %v", err))
 	}
+
+	if from <= r.syncedIndex {
+		r.syncedIndex = from - 1
+		r.logGen++
+	}
+
+	r.notifySync()
+}
+
+func (r *Raft) resetLog() {
+	if err := r.persister.ResetLog(r.lastIncludedIndex, r.logs); err != nil {
+		panic(fmt.Sprintf("persist: %v", err))
+	}
+
+	r.logGen++
+	r.markSynced(r.lastIndex())
 }
 
 func (r *Raft) readPersist() error {

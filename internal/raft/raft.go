@@ -55,6 +55,9 @@ type Raft struct {
 	commitIndex uint64
 	lastApplied uint64
 
+	syncedIndex uint64
+	logGen      uint64
+
 	lastIncludedIndex uint64
 	lastIncludedTerm  uint64
 	snapshotChunks    []byte
@@ -80,6 +83,8 @@ type Raft struct {
 
 	commitCh chan struct{}
 	applied  chan struct{}
+	syncCh   chan struct{}
+	synced   chan struct{}
 
 	stateMachine StateMachine
 	persister    Persister
@@ -137,6 +142,8 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 		done:              make(chan struct{}),
 		commitCh:          make(chan struct{}, 1),
 		applied:           make(chan struct{}),
+		syncCh:            make(chan struct{}, 1),
+		synced:            make(chan struct{}),
 		stateMachine:      stateMachine,
 		persister:         persister,
 		log:               slog.Default().With("node", id),
@@ -146,6 +153,11 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 	if err := r.readPersist(); err != nil {
 		return nil, err
 	}
+
+	if err := persister.Sync(); err != nil {
+		return nil, err
+	}
+	r.syncedIndex = r.lastIndex()
 
 	r.log.Info("node ready", "term", r.currentTerm, "log_length", len(r.logs))
 
@@ -401,11 +413,39 @@ func (r *Raft) Snapshot() {
 	r.lastIncludedIndex = index
 	r.lastIncludedTerm = term
 
-	if err := r.persister.ResetLog(index, r.logs); err != nil {
-		panic(fmt.Sprintf("persist: %v", err))
-	}
+	r.resetLog()
 
 	r.log.Info("saved snapshot", "index", index, "term", term, "log_bytes", size)
+}
+
+func (r *Raft) RunSync() {
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-r.syncCh:
+		}
+
+		r.mu.Lock()
+		target, gen := r.lastIndex(), r.logGen
+		behind := target > r.syncedIndex
+		r.mu.Unlock()
+
+		if !behind {
+			continue
+		}
+
+		if err := r.persister.Sync(); err != nil {
+			panic(fmt.Sprintf("persist: %v", err))
+		}
+
+		r.mu.Lock()
+		if r.logGen == gen && target > r.syncedIndex {
+			r.markSynced(target)
+			r.advanceCommit()
+		}
+		r.mu.Unlock()
+	}
 }
 
 func (r *Raft) Apply() {
@@ -507,7 +547,6 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			LeaderCommit: r.commitIndex,
 		}
 
-		majority := majority(len(r.peers))
 		r.mu.Unlock()
 
 		res, err := p.client.AppendEntries(ctx, req)
@@ -553,13 +592,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			r.nextIndex[p.id] = sentIndex + 1
 			r.matchIndex[p.id] = sentIndex
 
-			n := match(r.matchIndex, r.lastIndex())[majority-1]
-
-			if n > r.commitIndex && r.termAt(n) == r.currentTerm {
-				r.commitIndex = n
-				r.notifyCommit()
-				r.log.Debug("committed", "index", n)
-			}
+			r.advanceCommit()
 			r.mu.Unlock()
 			return
 		}

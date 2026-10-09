@@ -102,6 +102,10 @@ func (p *stubPersister) ResetLog(base uint64, entries []*proto.LogEntry) error {
 	return nil
 }
 
+func (p *stubPersister) Sync() error {
+	return p.err
+}
+
 func (p *stubPersister) LoadSnapshot() ([]byte, error) {
 	return nil, p.err
 }

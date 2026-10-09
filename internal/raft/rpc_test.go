@@ -500,6 +500,44 @@ func TestAppendEntries(t *testing.T) {
 		}
 	})
 
+	t.Run("replies only after the new entries are synced", func(t *testing.T) {
+		gate := make(chan struct{})
+		persister := &slowPersister{memoryPersister: &memoryPersister{}}
+		raft, err := New(1, map[uint64]string{1: "localhost:0", 2: "localhost:0"}, &recorder{}, persister)
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+
+		persister.gate = gate
+		go raft.RunSync()
+		t.Cleanup(raft.Kill)
+
+		done := make(chan *proto.AppendEntriesResponse, 1)
+		go func() {
+			res, _ := raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+				Term: 1, LeaderId: 2, Entries: makeLogs()[:2],
+			})
+			done <- res
+		}()
+
+		select {
+		case <-done:
+			t.Fatal("reply: expected none before the sync")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		close(gate)
+
+		select {
+		case res := <-done:
+			if !res.Success {
+				t.Error("append: expected success after the sync")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("reply: expected one after the sync")
+		}
+	})
+
 	t.Run("hints its log length when prevLogIndex is past its log", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.currentTerm = 3

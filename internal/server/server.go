@@ -49,6 +49,7 @@ func Serve() error {
 
 	go raft.RunElectionTimer()
 	go raft.Apply()
+	go raft.RunSync()
 	go raft.RunHeartbeat()
 
 	httpPort := os.Getenv("HTTP_PORT")

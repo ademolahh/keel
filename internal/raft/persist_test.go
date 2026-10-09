@@ -329,6 +329,10 @@ func (failingPersister) ResetLog(uint64, []*proto.LogEntry) error {
 	return errors.New("disk full")
 }
 
+func (failingPersister) Sync() error {
+	return errors.New("disk full")
+}
+
 func (failingPersister) LoadSnapshot() ([]byte, error) {
 	return nil, errors.New("disk unreadable")
 }

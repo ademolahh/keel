@@ -1197,6 +1197,80 @@ func TestStepDown(t *testing.T) {
 	})
 }
 
+func TestRunSync(t *testing.T) {
+	t.Run("covers many writes with one sync", func(t *testing.T) {
+		persister := &slowPersister{memoryPersister: &memoryPersister{}, delay: 20 * time.Millisecond}
+		raft, err := New(1, map[uint64]string{1: "localhost:0"}, &recorder{}, persister)
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+
+		raft.state = Leader
+		raft.leaderId = raft.id
+
+		go raft.Apply()
+		go raft.RunSync()
+		t.Cleanup(raft.Kill)
+
+		const writes = 50
+
+		var wg sync.WaitGroup
+		for i := range writes {
+			wg.Go(func() {
+				if !raft.Append(fmt.Sprintf("set k=%d", i)) {
+					t.Errorf("append %d: expected true, got false", i)
+				}
+			})
+		}
+		wg.Wait()
+
+		t.Logf("%d writes took %d syncs", writes, persister.syncs())
+
+		if syncs := persister.syncs(); syncs >= writes/2 {
+			t.Errorf("syncs: expected far fewer than %d, got %d", writes, syncs)
+		}
+	})
+
+	t.Run("does not count the leader before its entries are synced", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.mu.Lock()
+		defer raft.mu.Unlock()
+
+		raft.state = Leader
+		raft.leaderId = raft.id
+		raft.currentTerm = 1
+		raft.logs = []*proto.LogEntry{{Term: 1, Cmd: "set a=1"}}
+		raft.matchIndex = map[uint64]uint64{2: 1, 3: 0, 4: 0, 5: 1}
+
+		raft.advanceCommit()
+		if raft.commitIndex != 0 {
+			t.Errorf("commit index before the sync: expected 0, got %d", raft.commitIndex)
+		}
+
+		raft.markSynced(1)
+		raft.advanceCommit()
+		if raft.commitIndex != 1 {
+			t.Errorf("commit index after the sync: expected 1, got %d", raft.commitIndex)
+		}
+	})
+
+	t.Run("lowers the synced index when synced entries are rewritten", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.mu.Lock()
+		defer raft.mu.Unlock()
+
+		raft.logs = makeLogs()
+		raft.markSynced(5)
+
+		raft.logs = append(raft.logs[:2], &proto.LogEntry{Term: 4, Cmd: "set x=9"})
+		raft.persistLog(3)
+
+		if raft.syncedIndex != 2 {
+			t.Errorf("synced index: expected 2, got %d", raft.syncedIndex)
+		}
+	})
+}
+
 func TestStatus(t *testing.T) {
 	t.Run("returns copies the caller cannot change the node through", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
@@ -1300,6 +1374,9 @@ func TestPersist(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
+		go before.RunSync()
+		t.Cleanup(before.Kill)
+
 		before.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 3, CandidateId: 2})
 		before.AppendEntries(context.Background(),
 			&proto.AppendEntriesRequest{Term: 3, LeaderId: 2, Entries: makeLogs()[:2]})
@@ -1333,6 +1410,9 @@ func TestRestart(t *testing.T) {
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
+
+		go before.RunSync()
+		t.Cleanup(before.Kill)
 
 		before.InstallSnapshot(context.Background(), snapshotRequest(3, 4, 3, "state"))
 		entry := &proto.LogEntry{Term: 3, Cmd: "set x=1"}
@@ -1469,6 +1549,10 @@ func (p *memoryPersister) SaveSnapshot(data []byte) error {
 	return nil
 }
 
+func (p *memoryPersister) Sync() error {
+	return nil
+}
+
 func (p *memoryPersister) LoadSnapshot() ([]byte, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1559,6 +1643,39 @@ func (s *recorder) applied() []string {
 	return slices.Clone(s.cmds)
 }
 
+// slowPersister takes delay to sync and counts the syncs, and holds a sync
+// until release is closed when gate is set.
+type slowPersister struct {
+	*memoryPersister
+
+	delay time.Duration
+	gate  chan struct{}
+
+	mu    sync.Mutex
+	count int
+}
+
+func (p *slowPersister) Sync() error {
+	if p.gate != nil {
+		<-p.gate
+	}
+
+	time.Sleep(p.delay)
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.count++
+	return nil
+}
+
+func (p *slowPersister) syncs() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.count
+}
+
 func assertFreshDeadline(t *testing.T, r *Raft, before time.Time) {
 	t.Helper()
 
@@ -1619,6 +1736,9 @@ func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
 		t.Fatalf("raft initialization failed: %v", err)
 	}
 
+	go raft.RunSync()
+	t.Cleanup(raft.Kill)
+
 	return raft, peers
 }
 
@@ -1657,6 +1777,7 @@ func cluster(t *testing.T, n int, delays map[uint64]time.Duration) (map[uint64]*
 		nodes[id] = &node{raft: r, stop: s}
 
 		go r.Apply()
+		go r.RunSync()
 		t.Cleanup(r.Kill)
 	}
 

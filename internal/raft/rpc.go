@@ -2,7 +2,6 @@ package raft
 
 import (
 	"context"
-	"fmt"
 	"slices"
 	"time"
 
@@ -83,6 +82,18 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 
 func (r *Raft) AppendEntries(ctx context.Context,
 	req *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, error) {
+	res, lastNew := r.appendEntries(req)
+
+	if res.Success {
+		if err := r.waitSynced(ctx, lastNew); err != nil {
+			return nil, err
+		}
+	}
+
+	return res, nil
+}
+
+func (r *Raft) appendEntries(req *proto.AppendEntriesRequest) (*proto.AppendEntriesResponse, uint64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -102,7 +113,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 	no := &proto.AppendEntriesResponse{Term: r.currentTerm, Success: false}
 
 	if req.Term < r.currentTerm {
-		return no, nil
+		return no, 0
 	}
 
 	// only the leader of a term at least as new as ours sends this
@@ -129,7 +140,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 				Term:    r.currentTerm,
 				Success: false,
 				Hint:    &followerLogIndex,
-			}, nil
+			}, 0
 		}
 
 		// leader - {term: 1, index: 1} {term: 2, index: 2}
@@ -149,7 +160,7 @@ func (r *Raft) AppendEntries(ctx context.Context,
 				Term:    r.currentTerm,
 				Success: false,
 				Hint:    index,
-			}, nil
+			}, 0
 		}
 	}
 
@@ -179,8 +190,9 @@ func (r *Raft) AppendEntries(ctx context.Context,
 		break
 	}
 
+	lastNew := prevLogIndex + uint64(len(entries))
+
 	if req.LeaderCommit > r.commitIndex {
-		lastNew := prevLogIndex + uint64(len(entries))
 		if n := min(req.LeaderCommit, lastNew); n > r.commitIndex {
 			r.commitIndex = n
 			r.notifyCommit()
@@ -189,7 +201,11 @@ func (r *Raft) AppendEntries(ctx context.Context,
 
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 
-	return &proto.AppendEntriesResponse{Term: r.currentTerm, Success: true}, nil
+	if lastNew > r.syncedIndex {
+		r.notifySync()
+	}
+
+	return &proto.AppendEntriesResponse{Term: r.currentTerm, Success: true}, lastNew
 }
 
 func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRequest) (*proto.InstallSnapshotResponse, error) {
@@ -268,9 +284,7 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 	r.pendingSnapshot = snapshot
 	r.notifyCommit()
 
-	if err := r.persister.ResetLog(snapshot.LastIncludedIndex, r.logs); err != nil {
-		panic(fmt.Sprintf("persist: %v", err))
-	}
+	r.resetLog()
 
 	r.log.Info("installed snapshot", "index", snapshot.LastIncludedIndex, "term", snapshot.LastIncludedTerm,
 		"kept_entries", len(r.logs))
