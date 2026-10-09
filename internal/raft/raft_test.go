@@ -974,6 +974,7 @@ func TestSnapshot(t *testing.T) {
 	t.Run("saves a snapshot and drops the entries it covers once the applied log passes 1KB", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.stateMachine = &recorder{}
+		raft.SetSnapshotThreshold(1024)
 		raft.logs = bigLogs(30, 2)
 		raft.commitIndex = 30
 
@@ -1062,6 +1063,7 @@ func TestSnapshot(t *testing.T) {
 	t.Run("keeps the log while it is 1KB or less", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.stateMachine = &recorder{}
+		raft.SetSnapshotThreshold(1024)
 		raft.logs = bigLogs(10, 1)
 		raft.commitIndex = 10
 

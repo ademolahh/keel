@@ -350,7 +350,7 @@ func (r *Raft) HeartBeat() {
 	}
 }
 
-const DefaultSnapshotThreshold = 1024
+const DefaultSnapshotThreshold = 4 << 20
 
 func (r *Raft) Snapshot() {
 	r.mu.Lock()
