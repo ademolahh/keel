@@ -356,6 +356,7 @@ func (r *Raft) resetLog() {
 
 	r.logGen++
 	r.markSynced(r.lastIndex())
+	r.advanceCommit()
 }
 
 func (r *Raft) readPersist() error {

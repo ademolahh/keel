@@ -93,11 +93,18 @@ type Raft struct {
 	ackedRound map[uint64]uint64
 	acked      chan struct{}
 
+	pending map[uint64]pendingAppend
+
 	stateMachine StateMachine
 	persister    Persister
 	log          *slog.Logger
 
 	proto.UnimplementedRaftServer
+}
+
+type pendingAppend struct {
+	term uint64
+	done chan bool
 }
 
 type peer struct {
@@ -152,6 +159,7 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 		syncCh:            make(chan struct{}, 1),
 		synced:            make(chan struct{}),
 		ackedRound:        make(map[uint64]uint64),
+		pending:           make(map[uint64]pendingAppend),
 		acked:             make(chan struct{}),
 		stateMachine:      stateMachine,
 		persister:         persister,
@@ -311,20 +319,31 @@ func (r *Raft) Append(cmd string) bool {
 	r.logs = append(r.logs, &proto.LogEntry{Term: term, Cmd: cmd})
 	index := r.lastIndex()
 	r.persistLog(index)
+
+	if old, ok := r.pending[index]; ok {
+		old.done <- false
+	}
+
+	done := make(chan bool, 1)
+	r.pending[index] = pendingAppend{term: term, done: done}
 	r.wakeReplicators()
 	r.mu.Unlock()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	timeout := time.NewTimer(2 * time.Second)
+	defer timeout.Stop()
 
-	if err := r.waitApplied(ctx, index); err != nil {
+	select {
+	case ours := <-done:
+		return ours
+	case <-timeout.C:
+		r.mu.Lock()
+		if p, ok := r.pending[index]; ok && p.done == done {
+			delete(r.pending, index)
+		}
+		r.mu.Unlock()
+
 		return false
 	}
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	return index >= r.lastIncludedIndex && r.termAt(index) == term
 }
 
 func (r *Raft) Read(ctx context.Context) error {
@@ -565,6 +584,13 @@ func (r *Raft) Apply() {
 			}
 
 			r.mu.Lock()
+			for index, p := range r.pending {
+				if index <= snapshot.LastIncludedIndex {
+					p.done <- false
+					delete(r.pending, index)
+				}
+			}
+
 			r.lastApplied = max(r.lastApplied, snapshot.LastIncludedIndex)
 			r.log.Info("restored snapshot", "index", snapshot.LastIncludedIndex, "term", snapshot.LastIncludedTerm)
 			close(r.applied)
@@ -590,6 +616,14 @@ func (r *Raft) Apply() {
 		}
 
 		r.mu.Lock()
+		for i, e := range entries {
+			index := first + uint64(i)
+			if p, ok := r.pending[index]; ok {
+				p.done <- e.Term == p.term
+				delete(r.pending, index)
+			}
+		}
+
 		r.lastApplied = first + uint64(len(entries)) - 1
 		r.log.Debug("applied", "from", first, "to", r.lastApplied)
 		close(r.applied)

@@ -415,6 +415,38 @@ func TestAppend(t *testing.T) {
 		}
 	})
 
+	t.Run("reports a write as applied even when a snapshot compacts it first", func(t *testing.T) {
+		raft, err := New(1, map[uint64]string{1: "localhost:0"}, &recorder{}, &memoryPersister{})
+		if err != nil {
+			t.Fatalf("new: %v", err)
+		}
+
+		raft.SetSnapshotThreshold(1)
+		manualLeader(raft, 1)
+
+		go raft.Apply()
+		go raft.RunSync()
+		t.Cleanup(raft.Kill)
+
+		const writes = 50
+
+		var wg sync.WaitGroup
+		failed := make(chan int, writes)
+		for i := range writes {
+			wg.Go(func() {
+				if !raft.Append(fmt.Sprintf("set k=%d", i)) {
+					failed <- i
+				}
+			})
+		}
+		wg.Wait()
+		close(failed)
+
+		if n := len(failed); n != 0 {
+			t.Errorf("appends reported failed: expected 0 of %d, got %d", writes, n)
+		}
+	})
+
 	t.Run("refuses a command when it is not the leader", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
