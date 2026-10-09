@@ -1,9 +1,11 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/ademolahh/keel/internal/kv"
 	"github.com/ademolahh/keel/internal/metrics"
@@ -88,7 +90,10 @@ func (h *RaftHandler) Get(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.raft.Read(); err != nil {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	if err := h.raft.Read(ctx); err != nil {
 		slog.Warn("read not confirmed", "key", key, "err", err)
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "read could not be confirmed by a majority", http.StatusServiceUnavailable)

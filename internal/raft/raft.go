@@ -89,6 +89,10 @@ type Raft struct {
 	wake     map[uint64]chan struct{}
 	wakeTerm uint64
 
+	readRound  uint64
+	ackedRound map[uint64]uint64
+	acked      chan struct{}
+
 	stateMachine StateMachine
 	persister    Persister
 	log          *slog.Logger
@@ -147,6 +151,8 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 		applied:           make(chan struct{}),
 		syncCh:            make(chan struct{}, 1),
 		synced:            make(chan struct{}),
+		ackedRound:        make(map[uint64]uint64),
+		acked:             make(chan struct{}),
 		stateMachine:      stateMachine,
 		persister:         persister,
 		log:               slog.Default().With("node", id),
@@ -279,6 +285,8 @@ func (r *Raft) StartElection() {
 						r.matchIndex[p.id] = 0
 					}
 
+					r.logs = append(r.logs, &proto.LogEntry{Term: term})
+					r.persistLog(r.lastIndex())
 					r.wakeReplicators()
 					return
 				}
@@ -319,16 +327,69 @@ func (r *Raft) Append(cmd string) bool {
 	return index >= r.lastIncludedIndex && r.termAt(index) == term
 }
 
-func (r *Raft) Read() error {
-	if !r.IsLeader() {
+func (r *Raft) Read(ctx context.Context) error {
+	r.mu.Lock()
+	if r.state != Leader {
+		r.mu.Unlock()
 		return ErrNotLeader
 	}
 
-	if !r.Append("") {
+	ownCommit := r.commitIndex > r.lastIncludedIndex && r.termAt(r.commitIndex) == r.currentTerm
+	r.mu.Unlock()
+
+	if !ownCommit && !r.Append("") {
 		return ErrNoQuorum
 	}
 
-	return nil
+	r.mu.Lock()
+	if r.state != Leader {
+		r.mu.Unlock()
+		return ErrNotLeader
+	}
+
+	term := r.currentTerm
+	readIndex := r.commitIndex
+	r.readRound++
+	round := r.readRound
+	r.wakeReplicators()
+	r.mu.Unlock()
+
+	if err := r.confirmLeadership(ctx, term, round); err != nil {
+		return err
+	}
+
+	return r.waitApplied(ctx, readIndex)
+}
+
+func (r *Raft) confirmLeadership(ctx context.Context, term, round uint64) error {
+	for {
+		r.mu.Lock()
+		if r.state != Leader || r.currentTerm != term {
+			r.mu.Unlock()
+			return ErrNotLeader
+		}
+
+		acks := 1
+		for _, p := range r.peers {
+			if r.ackedRound[p.id] >= round {
+				acks++
+			}
+		}
+
+		acked := r.acked
+		need := majority(len(r.peers))
+		r.mu.Unlock()
+
+		if acks >= need {
+			return nil
+		}
+
+		select {
+		case <-acked:
+		case <-ctx.Done():
+			return ErrNoQuorum
+		}
+	}
 }
 
 func (r *Raft) HeartBeat() {
@@ -571,6 +632,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			continue
 		}
 
+		round := r.readRound
 		req := &proto.AppendEntriesRequest{
 			Term:         r.currentTerm,
 			LeaderId:     r.id,
@@ -608,16 +670,22 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			return
 		}
 
+		if r.id != r.leaderId || term != r.currentTerm {
+			r.mu.Unlock()
+			return
+		}
+
+		if round > r.ackedRound[p.id] {
+			r.ackedRound[p.id] = round
+			close(r.acked)
+			r.acked = make(chan struct{})
+		}
+
 		if res.Hint != nil {
 			r.nextIndex[p.id] = *res.Hint + 1
 			r.log.Debug("backing off", "peer", p.id, "next_index", *res.Hint+1)
 			r.mu.Unlock()
 			continue
-		}
-
-		if r.id != r.leaderId || term != r.currentTerm {
-			r.mu.Unlock()
-			return
 		}
 
 		if res.Success {

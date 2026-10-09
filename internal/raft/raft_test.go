@@ -453,23 +453,33 @@ func TestRead(t *testing.T) {
 	t.Run("refuses when it is not the leader", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
-		if err := raft.Read(); !errors.Is(err, ErrNotLeader) {
+		if err := raft.Read(context.Background()); !errors.Is(err, ErrNotLeader) {
 			t.Errorf("read: expected %v, got %v", ErrNotLeader, err)
 		}
 	})
 
-	t.Run("commits an empty entry on every read", func(t *testing.T) {
+	t.Run("commits an empty entry when it has none from its term", func(t *testing.T) {
 		nodes, _ := cluster(t, 3, nil)
-		r := nodes[DEFAULT_LEADER_ID].raft
-		r.mu.Lock()
-		r.state = Leader
-		r.leaderId = r.id
-		r.initNextIndex()
-		r.initMatchIndex()
-		r.mu.Unlock()
+		r := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
 
-		for range 2 {
-			if err := r.Read(); err != nil {
+		if err := r.Read(readContext(t)); err != nil {
+			t.Fatalf("read: unexpected error: %v", err)
+		}
+
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		if len(r.logs) != 1 || r.logs[0].Cmd != "" || r.lastApplied != 1 {
+			t.Errorf("log: expected one applied empty entry, got %v (applied %d)", r.logs, r.lastApplied)
+		}
+	})
+
+	t.Run("adds nothing to the log once it has committed in its term", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		r := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
+
+		for range 3 {
+			if err := r.Read(readContext(t)); err != nil {
 				t.Fatalf("read: unexpected error: %v", err)
 			}
 		}
@@ -477,12 +487,44 @@ func TestRead(t *testing.T) {
 		r.mu.Lock()
 		defer r.mu.Unlock()
 
-		if len(r.logs) != 2 || r.logs[0].Cmd != "" || r.logs[1].Cmd != "" {
-			t.Errorf("log: expected two empty entries, got %v", r.logs)
+		if len(r.logs) != 1 {
+			t.Errorf("log size: expected 1, got %d", len(r.logs))
+		}
+	})
+
+	t.Run("shares one round of calls between concurrent reads", func(t *testing.T) {
+		calls := &callCounter{}
+		nodes, _ := clusterWithOptions(t, 3, map[uint64][]grpc.ServerOption{
+			2: {calls.interceptor(20 * time.Millisecond)},
+			3: {calls.interceptor(20 * time.Millisecond)},
+		})
+		r := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
+
+		if err := r.Read(readContext(t)); err != nil {
+			t.Fatalf("first read: unexpected error: %v", err)
 		}
 
-		if r.lastApplied != 2 {
-			t.Errorf("last applied: expected 2, got %d", r.lastApplied)
+		// let the first read's calls finish before counting
+		time.Sleep(100 * time.Millisecond)
+		before, _ := calls.stats()
+
+		const reads = 20
+
+		var wg sync.WaitGroup
+		for range reads {
+			wg.Go(func() {
+				if err := r.Read(readContext(t)); err != nil {
+					t.Errorf("read: unexpected error: %v", err)
+				}
+			})
+		}
+		wg.Wait()
+
+		after, _ := calls.stats()
+		t.Logf("%d concurrent reads took %d calls to the followers", reads, after-before)
+
+		if after-before == 0 || after-before > 6 {
+			t.Errorf("calls to the followers: expected 1 to 6 for %d reads, got %d", reads, after-before)
 		}
 	})
 
@@ -503,7 +545,10 @@ func TestRead(t *testing.T) {
 		nodes[4].stop()
 		nodes[5].stop()
 
-		if err := r.Read(); !errors.Is(err, ErrNoQuorum) {
+		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+		defer cancel()
+
+		if err := r.Read(ctx); !errors.Is(err, ErrNoQuorum) {
 			t.Errorf("read: expected %v, got %v", ErrNoQuorum, err)
 		}
 	})
@@ -1331,6 +1376,23 @@ func TestReplicators(t *testing.T) {
 	})
 }
 
+func TestBecomeLeader(t *testing.T) {
+	t.Run("adds an empty entry for its term", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		r := nodes[DEFAULT_LEADER_ID].raft
+
+		r.StartElection()
+		waitForLeader(t, r, time.Second)
+
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		if len(r.logs) != 1 || r.logs[0].Cmd != "" || r.logs[0].Term != r.currentTerm {
+			t.Errorf("log: expected one empty entry for term %d, got %v", r.currentTerm, r.logs)
+		}
+	})
+}
+
 func TestStatus(t *testing.T) {
 	t.Run("returns copies the caller cannot change the node through", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
@@ -1701,6 +1763,28 @@ func (s *recorder) applied() []string {
 	defer s.mu.Unlock()
 
 	return slices.Clone(s.cmds)
+}
+
+func manualLeader(r *Raft, term uint64) *Raft {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.state = Leader
+	r.leaderId = r.id
+	r.currentTerm = term
+	r.initNextIndex()
+	r.initMatchIndex()
+
+	return r
+}
+
+func readContext(t *testing.T) context.Context {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+
+	return ctx
 }
 
 // closed reports whether ch is closed, skipping any value still buffered.
