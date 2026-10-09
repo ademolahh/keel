@@ -86,6 +86,9 @@ type Raft struct {
 	syncCh   chan struct{}
 	synced   chan struct{}
 
+	wake     map[uint64]chan struct{}
+	wakeTerm uint64
+
 	stateMachine StateMachine
 	persister    Persister
 	log          *slog.Logger
@@ -274,14 +277,9 @@ func (r *Raft) StartElection() {
 					for _, p := range r.peers {
 						r.nextIndex[p.id] = r.lastIndex() + 1
 						r.matchIndex[p.id] = 0
-
-						go func() {
-							ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-							defer cancel()
-
-							r.replicate(ctx, p)
-						}()
 					}
+
+					r.wakeReplicators()
 					return
 				}
 			}
@@ -305,17 +303,8 @@ func (r *Raft) Append(cmd string) bool {
 	r.logs = append(r.logs, &proto.LogEntry{Term: term, Cmd: cmd})
 	index := r.lastIndex()
 	r.persistLog(index)
-	peers := slices.Clone(r.peers)
+	r.wakeReplicators()
 	r.mu.Unlock()
-
-	for _, p := range peers {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-
-			r.replicate(ctx, p)
-		}()
-	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -344,21 +333,65 @@ func (r *Raft) Read() error {
 
 func (r *Raft) HeartBeat() {
 	r.mu.Lock()
-	peers := slices.Clone(r.peers)
-	state := r.state
-	r.mu.Unlock()
+	defer r.mu.Unlock()
 
-	if state != Leader {
+	if r.state != Leader {
 		return
 	}
 
-	for _, p := range peers {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
-			defer cancel()
+	r.wakeReplicators()
+}
 
-			r.replicate(ctx, p)
-		}()
+func (r *Raft) wakeReplicators() {
+	if r.wake == nil || r.wakeTerm != r.currentTerm {
+		r.startReplicators()
+	}
+
+	for _, wake := range r.wake {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (r *Raft) startReplicators() {
+	for _, wake := range r.wake {
+		close(wake)
+	}
+
+	r.wake = make(map[uint64]chan struct{}, len(r.peers))
+	r.wakeTerm = r.currentTerm
+
+	for _, p := range r.peers {
+		wake := make(chan struct{}, 1)
+		r.wake[p.id] = wake
+
+		go r.runReplicator(p, r.currentTerm, wake)
+	}
+}
+
+const replicateTimeout = time.Second
+
+func (r *Raft) runReplicator(p peer, term uint64, wake <-chan struct{}) {
+	for {
+		select {
+		case <-r.done:
+			return
+		case <-wake:
+		}
+
+		r.mu.Lock()
+		leading := r.state == Leader && r.id == r.leaderId && r.currentTerm == term
+		r.mu.Unlock()
+
+		if !leading {
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), replicateTimeout)
+		r.replicate(ctx, p)
+		cancel()
 	}
 }
 

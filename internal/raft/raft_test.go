@@ -1271,6 +1271,66 @@ func TestRunSync(t *testing.T) {
 	})
 }
 
+func TestReplicators(t *testing.T) {
+	t.Run("sends each follower one call at a time and batches writes", func(t *testing.T) {
+		calls := &callCounter{}
+		nodes, _ := clusterWithOptions(t, 3, map[uint64][]grpc.ServerOption{
+			2: {calls.interceptor(5 * time.Millisecond)},
+		})
+
+		r := nodes[DEFAULT_LEADER_ID].raft
+		r.mu.Lock()
+		r.state = Leader
+		r.leaderId = r.id
+		r.initNextIndex()
+		r.initMatchIndex()
+		r.mu.Unlock()
+
+		const writes = 50
+
+		var wg sync.WaitGroup
+		for i := range writes {
+			wg.Go(func() {
+				if !r.Append(fmt.Sprintf("set k=%d", i)) {
+					t.Errorf("append %d: expected true, got false", i)
+				}
+			})
+		}
+		wg.Wait()
+
+		total, most := calls.stats()
+		t.Logf("%d writes reached node 2 in %d calls", writes, total)
+
+		if most != 1 {
+			t.Errorf("calls in flight to node 2: expected at most 1, got %d", most)
+		}
+
+		if total >= writes {
+			t.Errorf("calls to node 2: expected fewer than %d, got %d", writes, total)
+		}
+	})
+
+	t.Run("stops the replicators of an earlier term", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.mu.Lock()
+		raft.state = Leader
+		raft.leaderId = raft.id
+		raft.currentTerm = 1
+		raft.wakeReplicators()
+		old := raft.wake
+
+		raft.currentTerm = 2
+		raft.wakeReplicators()
+		raft.mu.Unlock()
+
+		for id, wake := range old {
+			if !closed(wake) {
+				t.Errorf("peer %d: expected the term 1 wake channel closed", id)
+			}
+		}
+	})
+}
+
 func TestStatus(t *testing.T) {
 	t.Run("returns copies the caller cannot change the node through", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
@@ -1643,6 +1703,60 @@ func (s *recorder) applied() []string {
 	return slices.Clone(s.cmds)
 }
 
+// closed reports whether ch is closed, skipping any value still buffered.
+func closed(ch chan struct{}) bool {
+	for {
+		select {
+		case _, open := <-ch:
+			if !open {
+				return true
+			}
+		default:
+			return false
+		}
+	}
+}
+
+// callCounter counts the AppendEntries calls a server handles and the most it
+// handles at once.
+type callCounter struct {
+	mu       sync.Mutex
+	inFlight int
+	most     int
+	total    int
+}
+
+func (c *callCounter) interceptor(delay time.Duration) grpc.ServerOption {
+	return grpc.UnaryInterceptor(func(ctx context.Context, req any,
+		info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		if info.FullMethod != proto.Raft_AppendEntries_FullMethodName {
+			return handler(ctx, req)
+		}
+
+		c.mu.Lock()
+		c.inFlight++
+		c.total++
+		c.most = max(c.most, c.inFlight)
+		c.mu.Unlock()
+
+		time.Sleep(delay)
+		res, err := handler(ctx, req)
+
+		c.mu.Lock()
+		c.inFlight--
+		c.mu.Unlock()
+
+		return res, err
+	})
+}
+
+func (c *callCounter) stats() (total, most int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.total, c.most
+}
+
 // slowPersister takes delay to sync and counts the syncs, and holds a sync
 // until release is closed when gate is set.
 type slowPersister struct {
@@ -1745,6 +1859,17 @@ func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
 func cluster(t *testing.T, n int, delays map[uint64]time.Duration) (map[uint64]*node, map[uint64]string) {
 	t.Helper()
 
+	opts := make(map[uint64][]grpc.ServerOption, len(delays))
+	for id, d := range delays {
+		opts[id] = []grpc.ServerOption{delay(d)}
+	}
+
+	return clusterWithOptions(t, n, opts)
+}
+
+func clusterWithOptions(t *testing.T, n int, serverOpts map[uint64][]grpc.ServerOption) (map[uint64]*node, map[uint64]string) {
+	t.Helper()
+
 	peers := make(map[uint64]string, n)
 
 	nodes := make(map[uint64]*node)
@@ -1768,12 +1893,7 @@ func cluster(t *testing.T, n int, delays map[uint64]time.Duration) (map[uint64]*
 			t.Fatalf("raft initialization failed: %v", err)
 		}
 
-		var opts []grpc.ServerOption
-		if d, ok := delays[id]; ok {
-			opts = append(opts, delay(d))
-		}
-
-		s := start(t, r, lst, opts...)
+		s := start(t, r, lst, serverOpts[id]...)
 		nodes[id] = &node{raft: r, stop: s}
 
 		go r.Apply()
