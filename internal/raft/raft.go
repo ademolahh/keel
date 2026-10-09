@@ -189,7 +189,7 @@ func (r *Raft) RunElectionTimer() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
-	for range ticker.C {
+	for {
 		select {
 		case <-r.done:
 			return
