@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -260,6 +261,7 @@ func TestAppend(t *testing.T) {
 		r.leaderId = r.id
 		r.initNextIndex()
 		r.initMatchIndex()
+		r.startReplicators()
 		logSize := len(r.logs)
 
 		r.Append("set a=1")
@@ -276,6 +278,7 @@ func TestAppend(t *testing.T) {
 		r.leaderId = r.id
 		r.initNextIndex()
 		r.initMatchIndex()
+		r.startReplicators()
 		size := len(nodes)
 
 		res := r.Append("set a = 1")
@@ -327,6 +330,7 @@ func TestAppend(t *testing.T) {
 		nodes[STALE_ID].raft.logs = append(nodes[STALE_ID].raft.logs, logs[0])
 		nodes[DEFAULT_LEADER_ID].raft.initNextIndex()
 		nodes[DEFAULT_LEADER_ID].raft.initMatchIndex()
+		nodes[DEFAULT_LEADER_ID].raft.startReplicators()
 
 		res := nodes[DEFAULT_LEADER_ID].raft.Append("set a=1")
 		if !res {
@@ -351,6 +355,7 @@ func TestAppend(t *testing.T) {
 		r.leaderId = r.id
 		r.initNextIndex()
 		r.initMatchIndex()
+		r.startReplicators()
 
 		nodes[3].stop()
 		nodes[4].stop()
@@ -469,6 +474,7 @@ func TestAppend(t *testing.T) {
 		r.leaderId = r.id
 		r.initNextIndex()
 		r.initMatchIndex()
+		r.startReplicators()
 		r.mu.Unlock()
 
 		if !r.Append("set a=1") {
@@ -571,6 +577,7 @@ func TestRead(t *testing.T) {
 		r.commitIndex = 1
 		r.initNextIndex()
 		r.initMatchIndex()
+		r.startReplicators()
 		r.mu.Unlock()
 
 		nodes[3].stop()
@@ -597,6 +604,7 @@ func TestReplicate(t *testing.T) {
 		leader.electionDeadline = time.Now().Add(-time.Second)
 		leader.initNextIndex()
 		leader.initMatchIndex()
+		leader.startReplicators()
 		leader.mu.Unlock()
 
 		follower := nodes[2].raft
@@ -623,6 +631,7 @@ func TestReplicate(t *testing.T) {
 		leader.currentTerm = 1
 		leader.initNextIndex()
 		leader.initMatchIndex()
+		leader.startReplicators()
 
 		follower := nodes[2].raft
 		follower.mu.Lock()
@@ -666,6 +675,7 @@ func TestReplicate(t *testing.T) {
 		leader.leaderId = leader.id
 		leader.initNextIndex()
 		leader.initMatchIndex()
+		leader.startReplicators()
 
 		// every call to node 2 fails, so replicate keeps retrying
 		nodes[2].stop()
@@ -700,6 +710,7 @@ func TestReplicate(t *testing.T) {
 		leader.currentTerm = 1
 		leader.initNextIndex()
 		leader.initMatchIndex()
+		leader.startReplicators()
 
 		nodes[2].stop()
 
@@ -735,6 +746,7 @@ func TestReplicate(t *testing.T) {
 		leader.currentTerm = 3
 		leader.logs = makeLogs()
 		leader.initMatchIndex()
+		leader.startReplicators()
 		leader.nextIndex[2] = 1
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -773,6 +785,7 @@ func TestRunHeartbeat(t *testing.T) {
 		leader.leaderId = leader.id
 		leader.initNextIndex()
 		leader.initMatchIndex()
+		leader.startReplicators()
 
 		go leader.RunHeartbeat()
 		t.Cleanup(leader.Kill)
@@ -865,6 +878,7 @@ func TestHeartBeat(t *testing.T) {
 		leader.leaderId = leader.id
 		leader.initNextIndex()
 		leader.initMatchIndex()
+		leader.startReplicators()
 
 		deadlines := make(map[uint64]time.Time)
 		for id, n := range nodes {
@@ -903,6 +917,7 @@ func TestHeartBeat(t *testing.T) {
 		leader.currentTerm = 1
 		leader.initNextIndex()
 		leader.initMatchIndex()
+		leader.startReplicators()
 
 		for id, n := range nodes {
 			if id == DEFAULT_LEADER_ID {
@@ -1189,6 +1204,7 @@ func TestSendSnapshot(t *testing.T) {
 			r.nextIndex[p.id] = 1
 			r.matchIndex[p.id] = 0
 		}
+		r.startReplicators()
 		r.mu.Unlock()
 
 		if !r.Append("set f=6") {
@@ -1411,6 +1427,7 @@ func TestReplicators(t *testing.T) {
 		r.leaderId = r.id
 		r.initNextIndex()
 		r.initMatchIndex()
+		r.startReplicators()
 		r.mu.Unlock()
 
 		const writes = 50
@@ -1437,23 +1454,28 @@ func TestReplicators(t *testing.T) {
 		}
 	})
 
-	t.Run("stops the replicators of an earlier term", func(t *testing.T) {
+	t.Run("stops its replicators when it steps down", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		before := runtime.NumGoroutine()
+
 		raft.mu.Lock()
 		raft.state = Leader
 		raft.leaderId = raft.id
 		raft.currentTerm = 1
-		raft.wakeReplicators()
-		old := raft.wake
-
-		raft.currentTerm = 2
-		raft.wakeReplicators()
+		raft.startReplicators()
 		raft.mu.Unlock()
 
-		for id, wake := range old {
-			if !closed(wake) {
-				t.Errorf("peer %d: expected the term 1 wake channel closed", id)
-			}
+		if running := runtime.NumGoroutine(); running < before+DEFAULT_CLUSTER_SIZE-1 {
+			t.Fatalf("goroutines: expected %d replicators to start, got %d more", DEFAULT_CLUSTER_SIZE-1, running-before)
+		}
+
+		raft.mu.Lock()
+		raft.becomeFollower(2, "test")
+		raft.mu.Unlock()
+
+		ok := waitFor(t, time.Second, func() bool { return runtime.NumGoroutine() <= before })
+		if !ok {
+			t.Errorf("goroutines: expected the replicators to exit, %d still running", runtime.NumGoroutine()-before)
 		}
 	})
 }
@@ -1856,6 +1878,7 @@ func manualLeader(r *Raft, term uint64) *Raft {
 	r.currentTerm = term
 	r.initNextIndex()
 	r.initMatchIndex()
+	r.startReplicators()
 
 	return r
 }
@@ -1867,20 +1890,6 @@ func readContext(t *testing.T) context.Context {
 	t.Cleanup(cancel)
 
 	return ctx
-}
-
-// closed reports whether ch is closed, skipping any value still buffered.
-func closed(ch chan struct{}) bool {
-	for {
-		select {
-		case _, open := <-ch:
-			if !open {
-				return true
-			}
-		default:
-			return false
-		}
-	}
 }
 
 // callCounter counts the AppendEntries calls a server handles and the most it

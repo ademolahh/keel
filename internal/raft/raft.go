@@ -103,8 +103,8 @@ type leaderState struct {
 	nextIndex  map[uint64]uint64
 	matchIndex map[uint64]uint64
 
-	wake     map[uint64]chan struct{}
-	wakeTerm uint64
+	wake              map[uint64]chan struct{}
+	cancelReplicators context.CancelFunc
 
 	readRound  uint64
 	ackedRound map[uint64]uint64
@@ -328,6 +328,7 @@ func (r *Raft) becomeLeader() {
 
 	r.logs = append(r.logs, &proto.LogEntry{Term: r.currentTerm})
 	r.persistLog(r.lastIndex())
+	r.startReplicators()
 	r.wakeReplicators()
 }
 
@@ -338,9 +339,25 @@ func (r *Raft) failPending() {
 	}
 }
 
+func (r *Raft) startReplicators() {
+	r.stopReplicators()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancelReplicators = cancel
+	r.wake = make(map[uint64]chan struct{}, len(r.peers))
+
+	for _, p := range r.peers {
+		wake := make(chan struct{}, 1)
+		r.wake[p.id] = wake
+
+		go r.runReplicator(ctx, p, wake)
+	}
+}
+
 func (r *Raft) stopReplicators() {
-	for _, wake := range r.wake {
-		close(wake)
+	if r.cancelReplicators != nil {
+		r.cancelReplicators()
+		r.cancelReplicators = nil
 	}
 
 	r.wake = nil
@@ -462,10 +479,6 @@ func (r *Raft) HeartBeat() {
 }
 
 func (r *Raft) wakeReplicators() {
-	if r.wake == nil || r.wakeTerm != r.currentTerm {
-		r.startReplicators()
-	}
-
 	for _, wake := range r.wake {
 		select {
 		case wake <- struct{}{}:
@@ -474,42 +487,20 @@ func (r *Raft) wakeReplicators() {
 	}
 }
 
-func (r *Raft) startReplicators() {
-	for _, wake := range r.wake {
-		close(wake)
-	}
-
-	r.wake = make(map[uint64]chan struct{}, len(r.peers))
-	r.wakeTerm = r.currentTerm
-
-	for _, p := range r.peers {
-		wake := make(chan struct{}, 1)
-		r.wake[p.id] = wake
-
-		go r.runReplicator(p, r.currentTerm, wake)
-	}
-}
-
 const replicateTimeout = time.Second
 
-func (r *Raft) runReplicator(p peer, term uint64, wake <-chan struct{}) {
+func (r *Raft) runReplicator(ctx context.Context, p peer, wake <-chan struct{}) {
 	for {
 		select {
+		case <-ctx.Done():
+			return
 		case <-r.done:
 			return
 		case <-wake:
 		}
 
-		r.mu.Lock()
-		leading := r.state == Leader && r.id == r.leaderId && r.currentTerm == term
-		r.mu.Unlock()
-
-		if !leading {
-			return
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), replicateTimeout)
-		r.replicate(ctx, p)
+		round, cancel := context.WithTimeout(ctx, replicateTimeout)
+		r.replicate(round, p)
 		cancel()
 	}
 }
@@ -681,7 +672,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 		}
 
 		r.mu.Lock()
-		if r.id != r.leaderId || term != r.currentTerm {
+		if r.state != Leader || term != r.currentTerm {
 			r.mu.Unlock()
 			return
 		}
@@ -730,7 +721,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 			return
 		}
 
-		if r.id != r.leaderId || term != r.currentTerm {
+		if r.state != Leader || term != r.currentTerm {
 			r.mu.Unlock()
 			return
 		}
@@ -806,7 +797,7 @@ func (r *Raft) sendSnapshot(ctx context.Context, p peer, term uint64) bool {
 			return false
 		}
 
-		if r.id != r.leaderId || term != r.currentTerm {
+		if r.state != Leader || term != r.currentTerm {
 			r.mu.Unlock()
 			return false
 		}
