@@ -154,6 +154,41 @@ func TestFilePersister(t *testing.T) {
 		}
 	})
 
+	t.Run("syncs safely while the log is rewritten", func(t *testing.T) {
+		dir := t.TempDir()
+		p := openPersister(t, dir, dir)
+		p.SaveLog(1, makeLogs())
+
+		done := make(chan struct{})
+		errs := make(chan error, 1)
+		go func() {
+			defer close(errs)
+			for {
+				select {
+				case <-done:
+					return
+				default:
+				}
+
+				if err := p.Sync(); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+
+		for i := range 200 {
+			if err := p.ResetLog(uint64(i), makeLogs()[2:]); err != nil {
+				t.Fatalf("reset log: %v", err)
+			}
+		}
+		close(done)
+
+		if err := <-errs; err != nil {
+			t.Errorf("sync: unexpected error: %v", err)
+		}
+	})
+
 	t.Run("keeps the log's first index across a reload", func(t *testing.T) {
 		dir := t.TempDir()
 		openPersister(t, dir, dir).ResetLog(4, makeLogs()[4:])

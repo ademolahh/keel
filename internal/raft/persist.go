@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sync"
 
 	"github.com/ademolahh/keel/proto"
 	protobuf "google.golang.org/protobuf/proto"
@@ -35,6 +36,7 @@ type FilePersister struct {
 	logPath      string
 	snapshotPath string
 
+	logMu   sync.Mutex
 	log     *os.File
 	base    uint64
 	offsets []int64
@@ -78,11 +80,15 @@ func (p *FilePersister) openLog() error {
 		return err
 	}
 
-	if p.log != nil {
-		p.log.Close()
+	p.logMu.Lock()
+	old := p.log
+	p.log = f
+	p.logMu.Unlock()
+
+	if old != nil {
+		old.Close()
 	}
 
-	p.log = f
 	return nil
 }
 
@@ -183,7 +189,16 @@ func encodeRecords(start int64, entries []*proto.LogEntry) ([]byte, []int64, err
 }
 
 func (p *FilePersister) Sync() error {
-	return p.log.Sync()
+	p.logMu.Lock()
+	f := p.log
+	p.logMu.Unlock()
+
+	// a closed file was replaced by ResetLog, which fsyncs everything it keeps
+	if err := f.Sync(); err != nil && !errors.Is(err, os.ErrClosed) {
+		return err
+	}
+
+	return nil
 }
 
 func (p *FilePersister) Load() (*proto.PersistentState, error) {
