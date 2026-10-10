@@ -120,7 +120,7 @@ func isPort(s string) bool {
 	return err == nil && n > 0
 }
 
-func newRaft(cfg Config, sm raft.StateMachine, m *metrics.RaftCollector) (*raft.Raft, error) {
+func newRaft(cfg Config, sm raft.StateMachine, m *metrics.Metrics) (*raft.Raft, error) {
 	persistDir := filepath.Join(cfg.DataDir, "persist")
 	snapshotDir := filepath.Join(cfg.DataDir, "snapshot")
 

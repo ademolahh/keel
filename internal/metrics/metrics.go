@@ -3,53 +3,36 @@ package metrics
 import (
 	"net/http"
 
-	"github.com/ademolahh/keel/internal/raft"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
-type RaftCollector struct {
+type Metrics struct {
 	registry *prometheus.Registry
+	factory  promauto.Factory
 
 	http    httpMetrics
 	rpc     rpcMetrics
 	persist persistMetrics
-	raft    raftMetrics
 }
 
-func New() *RaftCollector {
-	c := &RaftCollector{
-		registry: prometheus.NewRegistry(),
-		http:     newHTTPMetrics(),
-		rpc:      newRPCMetrics(),
-		persist:  newPersistMetrics(),
-		raft:     newRaftMetrics(),
+func New() *Metrics {
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(collectors.NewGoCollector())
+
+	factory := promauto.With(registry)
+
+	return &Metrics{
+		registry: registry,
+		factory:  factory,
+		http:     newHTTPMetrics(factory),
+		rpc:      newRPCMetrics(factory),
+		persist:  newPersistMetrics(factory),
 	}
-
-	c.registry.MustRegister(c, collectors.NewGoCollector())
-
-	return c
 }
 
-func (c *RaftCollector) SetRaft(r *raft.Raft) {
-	c.raft.node = r
-}
-
-func (c *RaftCollector) Handler() http.Handler {
-	return promhttp.HandlerFor(c.registry, promhttp.HandlerOpts{})
-}
-
-func (c *RaftCollector) Describe(ch chan<- *prometheus.Desc) {
-	c.http.describe(ch)
-	c.rpc.describe(ch)
-	c.persist.describe(ch)
-	c.raft.describe(ch)
-}
-
-func (c *RaftCollector) Collect(ch chan<- prometheus.Metric) {
-	c.http.collect(ch)
-	c.rpc.collect(ch)
-	c.persist.collect(ch)
-	c.raft.collect(ch)
+func (m *Metrics) Handler() http.Handler {
+	return promhttp.HandlerFor(m.registry, promhttp.HandlerOpts{})
 }

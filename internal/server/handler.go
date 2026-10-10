@@ -198,7 +198,7 @@ func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func routes(h *RaftHandler, m *metrics.RaftCollector) http.Handler {
+func routes(h *RaftHandler, m *metrics.Metrics) http.Handler {
 	mux := http.NewServeMux()
 
 	handle := func(route string, handler http.HandlerFunc) {

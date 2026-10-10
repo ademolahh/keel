@@ -14,7 +14,12 @@ func TestRaftMetrics(t *testing.T) {
 	t.Run("reports nothing before a node is set", func(t *testing.T) {
 		c := New()
 
-		if n := testutil.CollectAndCount(c, "raft_term", "raft_state"); n != 0 {
+		n, err := testutil.GatherAndCount(c.registry, "raft_term", "raft_state")
+		if err != nil {
+			t.Fatalf("gather: %v", err)
+		}
+
+		if n != 0 {
 			t.Errorf("raft metrics: expected none, got %d", n)
 		}
 	})
@@ -47,7 +52,7 @@ raft_log_entries 2
 raft_leader_changes_total 0
 `
 
-		err := testutil.CollectAndCompare(c, strings.NewReader(expected),
+		err := testutil.GatherAndCompare(c.registry, strings.NewReader(expected),
 			"raft_term", "raft_state", "raft_commit_index", "raft_last_applied",
 			"raft_log_entries", "raft_leader_changes_total", "raft_peer_match_index")
 		if err != nil {

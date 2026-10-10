@@ -83,7 +83,7 @@ func startGRPC(addr string, r *raft.Raft) (*grpc.Server, error) {
 	return server, nil
 }
 
-func startHTTP(addr string, h *RaftHandler, m *metrics.RaftCollector) (*http.Server, <-chan error) {
+func startHTTP(addr string, h *RaftHandler, m *metrics.Metrics) (*http.Server, <-chan error) {
 	server := &http.Server{
 		Addr:    addr,
 		Handler: routes(h, m),
