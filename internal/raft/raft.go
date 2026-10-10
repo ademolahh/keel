@@ -72,7 +72,7 @@ type Raft struct {
 	mu       sync.Mutex
 
 	commitCh chan struct{}
-	applied  chan struct{}
+	applied  broadcast
 
 	stateMachine StateMachine
 	persister    Persister
@@ -89,7 +89,7 @@ type logState struct {
 	syncedIndex uint64
 	logGen      uint64
 	syncCh      chan struct{}
-	synced      chan struct{}
+	synced      broadcast
 }
 
 type snapshotState struct {
@@ -108,7 +108,7 @@ type leaderState struct {
 
 	readRound  uint64
 	ackedRound map[uint64]uint64
-	acked      chan struct{}
+	acked      broadcast
 
 	pending map[uint64]pendingAppend
 }
@@ -162,16 +162,13 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 		voteTimeout:       5 * time.Second,
 		logs:              []*proto.LogEntry{},
 		syncCh:            make(chan struct{}, 1),
-		synced:            make(chan struct{}),
 		snapshotThreshold: DefaultSnapshotThreshold,
 		nextIndex:         make(map[uint64]uint64),
 		matchIndex:        make(map[uint64]uint64),
 		ackedRound:        make(map[uint64]uint64),
-		acked:             make(chan struct{}),
 		pending:           make(map[uint64]pendingAppend),
 		done:              make(chan struct{}),
 		commitCh:          make(chan struct{}, 1),
-		applied:           make(chan struct{}),
 		stateMachine:      stateMachine,
 		persister:         persister,
 		log:               slog.Default().With("node", id),
@@ -312,6 +309,7 @@ func (r *Raft) becomeFollower(term uint64, reason string) {
 
 	r.failPending()
 	r.stopReplicators()
+	r.acked.notify()
 	r.log.Info("became follower", "term", term, "reason", reason)
 }
 
@@ -437,11 +435,9 @@ func (r *Raft) Read(ctx context.Context) error {
 }
 
 func (r *Raft) confirmLeadership(ctx context.Context, term, round uint64) error {
-	for {
-		r.mu.Lock()
+	err := r.waitUntil(ctx, &r.acked, func() bool {
 		if r.state != Leader || r.currentTerm != term {
-			r.mu.Unlock()
-			return ErrNotLeader
+			return true
 		}
 
 		acks := 1
@@ -451,20 +447,20 @@ func (r *Raft) confirmLeadership(ctx context.Context, term, round uint64) error 
 			}
 		}
 
-		acked := r.acked
-		need := majority(len(r.peers))
-		r.mu.Unlock()
-
-		if acks >= need {
-			return nil
-		}
-
-		select {
-		case <-acked:
-		case <-ctx.Done():
-			return ErrNoQuorum
-		}
+		return acks >= majority(len(r.peers))
+	})
+	if err != nil {
+		return ErrNoQuorum
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state != Leader || r.currentTerm != term {
+		return ErrNotLeader
+	}
+
+	return nil
 }
 
 func (r *Raft) HeartBeat() {
@@ -616,8 +612,7 @@ func (r *Raft) Apply() {
 			r.mu.Lock()
 			r.lastApplied = max(r.lastApplied, snapshot.LastIncludedIndex)
 			r.log.Info("restored snapshot", "index", snapshot.LastIncludedIndex, "term", snapshot.LastIncludedTerm)
-			close(r.applied)
-			r.applied = make(chan struct{})
+			r.applied.notify()
 			r.mu.Unlock()
 			continue
 		}
@@ -649,8 +644,7 @@ func (r *Raft) Apply() {
 
 		r.lastApplied = first + uint64(len(entries)) - 1
 		r.log.Debug("applied", "from", first, "to", r.lastApplied)
-		close(r.applied)
-		r.applied = make(chan struct{})
+		r.applied.notify()
 		r.mu.Unlock()
 
 		r.Snapshot()
@@ -728,8 +722,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 
 		if round > r.ackedRound[p.id] {
 			r.ackedRound[p.id] = round
-			close(r.acked)
-			r.acked = make(chan struct{})
+			r.acked.notify()
 		}
 
 		if res.Hint != nil {

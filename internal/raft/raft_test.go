@@ -1497,6 +1497,34 @@ func TestBecomeLeader(t *testing.T) {
 	})
 }
 
+func TestBroadcast(t *testing.T) {
+	t.Run("wakes every waiter with one notify", func(t *testing.T) {
+		var b broadcast
+		waiters := []<-chan struct{}{b.wait(), b.wait(), b.wait()}
+
+		b.notify()
+
+		for i, w := range waiters {
+			select {
+			case <-w:
+			default:
+				t.Errorf("waiter %d: expected to be woken", i)
+			}
+		}
+	})
+
+	t.Run("gives later waiters a fresh channel", func(t *testing.T) {
+		var b broadcast
+		b.notify()
+
+		select {
+		case <-b.wait():
+			t.Error("wait after notify: expected to block until the next notify")
+		default:
+		}
+	})
+}
+
 func TestStatus(t *testing.T) {
 	t.Run("returns copies the caller cannot change the node through", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)

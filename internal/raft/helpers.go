@@ -108,41 +108,50 @@ func (l *logState) entriesFrom(index uint64) []*proto.LogEntry {
 }
 
 func (r *Raft) waitApplied(ctx context.Context, index uint64) error {
+	return r.waitUntil(ctx, &r.applied, func() bool { return r.lastApplied >= index })
+}
+
+func (r *Raft) waitSynced(ctx context.Context, index uint64) error {
+	return r.waitUntil(ctx, &r.synced, func() bool { return r.syncedIndex >= index })
+}
+
+func (r *Raft) waitUntil(ctx context.Context, b *broadcast, done func() bool) error {
 	for {
 		r.mu.Lock()
-		done := r.lastApplied >= index
-		applied := r.applied
+		ok := done()
+		changed := b.wait()
 		r.mu.Unlock()
 
-		if done {
+		if ok {
 			return nil
 		}
 
 		select {
-		case <-applied:
+		case <-changed:
 		case <-ctx.Done():
 			return ctx.Err()
 		}
 	}
 }
 
-func (r *Raft) waitSynced(ctx context.Context, index uint64) error {
-	for {
-		r.mu.Lock()
-		done := r.syncedIndex >= index
-		synced := r.synced
-		r.mu.Unlock()
+type broadcast struct {
+	ch chan struct{}
+}
 
-		if done {
-			return nil
-		}
-
-		select {
-		case <-synced:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+func (b *broadcast) wait() <-chan struct{} {
+	if b.ch == nil {
+		b.ch = make(chan struct{})
 	}
+
+	return b.ch
+}
+
+func (b *broadcast) notify() {
+	if b.ch != nil {
+		close(b.ch)
+	}
+
+	b.ch = make(chan struct{})
 }
 
 func (r *Raft) notifySync() {
@@ -154,8 +163,7 @@ func (r *Raft) notifySync() {
 
 func (l *logState) markSynced(index uint64) {
 	l.syncedIndex = index
-	close(l.synced)
-	l.synced = make(chan struct{})
+	l.synced.notify()
 }
 
 func (r *Raft) advanceCommit() {
