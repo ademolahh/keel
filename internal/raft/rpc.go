@@ -168,10 +168,10 @@ func (r *Raft) appendEntries(req *proto.AppendEntriesRequest) (*proto.AppendEntr
 				continue
 			}
 
-			r.logs = r.logs[:index-r.lastIncludedIndex-1]
+			r.truncateFrom(index)
 		}
 
-		r.logs = append(r.logs, entries[i:]...)
+		r.addEntries(entries[i:]...)
 		logFrom = index
 		break
 	}
@@ -253,9 +253,9 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 	}
 
 	if snapshot.LastIncludedIndex <= r.lastIndex() && r.termAt(snapshot.LastIncludedIndex) == snapshot.LastIncludedTerm {
-		r.logs = slices.Clone(r.entriesFrom(snapshot.LastIncludedIndex + 1))
+		r.setEntries(slices.Clone(r.entriesFrom(snapshot.LastIncludedIndex + 1)))
 	} else {
-		r.logs = nil
+		r.setEntries(nil)
 	}
 
 	r.lastIncludedIndex = snapshot.LastIncludedIndex

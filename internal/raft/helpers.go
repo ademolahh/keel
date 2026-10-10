@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/ademolahh/keel/proto"
+	protobuf "google.golang.org/protobuf/proto"
 )
 
 type Status struct {
@@ -158,6 +159,30 @@ func (r *Raft) notifySync() {
 	select {
 	case r.syncCh <- struct{}{}:
 	default:
+	}
+}
+
+func (l *logState) addEntries(entries ...*proto.LogEntry) {
+	l.logs = append(l.logs, entries...)
+	for _, e := range entries {
+		l.logBytes += protobuf.Size(e)
+	}
+}
+
+func (l *logState) truncateFrom(index uint64) {
+	cut := index - l.lastIncludedIndex - 1
+	for _, e := range l.logs[cut:] {
+		l.logBytes -= protobuf.Size(e)
+	}
+
+	l.logs = l.logs[:cut]
+}
+
+func (l *logState) setEntries(entries []*proto.LogEntry) {
+	l.logs = entries
+	l.logBytes = 0
+	for _, e := range entries {
+		l.logBytes += protobuf.Size(e)
 	}
 }
 

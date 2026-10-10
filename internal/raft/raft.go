@@ -85,6 +85,7 @@ type logState struct {
 	logs              []*proto.LogEntry
 	lastIncludedIndex uint64
 	lastIncludedTerm  uint64
+	logBytes          int
 
 	syncedIndex uint64
 	logGen      uint64
@@ -324,7 +325,7 @@ func (r *Raft) becomeLeader() {
 		r.matchIndex[p.id] = 0
 	}
 
-	r.logs = append(r.logs, &proto.LogEntry{Term: r.currentTerm})
+	r.addEntries(&proto.LogEntry{Term: r.currentTerm})
 	r.persistLog(r.lastIndex())
 	r.startReplicators()
 	r.wakeReplicators()
@@ -376,7 +377,7 @@ func (r *Raft) Append(ctx context.Context, cmd string) error {
 	}
 
 	term := r.currentTerm
-	r.logs = append(r.logs, &proto.LogEntry{Term: term, Cmd: cmd})
+	r.addEntries(&proto.LogEntry{Term: term, Cmd: cmd})
 	index := r.lastIndex()
 	r.persistLog(index)
 
@@ -510,20 +511,14 @@ const DefaultSnapshotThreshold = 4 << 20
 
 func (r *Raft) Snapshot() {
 	r.mu.Lock()
-	index, base := r.lastApplied, r.lastIncludedIndex
+	index, size := r.lastApplied, r.logBytes
 
-	if r.pendingSnapshot != nil || index <= base {
+	if r.pendingSnapshot != nil || index <= r.lastIncludedIndex || size <= r.snapshotThreshold {
 		r.mu.Unlock()
 		return
 	}
 
-	size := protobuf.Size(&proto.PersistentState{Logs: r.logs[:index-base]})
-	threshold := r.snapshotThreshold
 	r.mu.Unlock()
-
-	if size <= threshold {
-		return
-	}
 
 	data, err := r.stateMachine.Snapshot()
 	if err != nil {
@@ -553,7 +548,7 @@ func (r *Raft) Snapshot() {
 	}
 
 	r.snapshot = snapshot
-	r.logs = slices.Clone(r.entriesFrom(index + 1))
+	r.setEntries(slices.Clone(r.entriesFrom(index + 1)))
 	r.lastIncludedIndex = index
 	r.lastIncludedTerm = term
 

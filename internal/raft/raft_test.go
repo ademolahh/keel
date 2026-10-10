@@ -1102,7 +1102,7 @@ func TestSnapshot(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.stateMachine = &recorder{}
 		raft.SetSnapshotThreshold(1024)
-		raft.logs = bigLogs(30, 2)
+		raft.setEntries(bigLogs(30, 2))
 		raft.commitIndex = 30
 
 		go raft.Apply()
@@ -1143,7 +1143,7 @@ func TestSnapshot(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.stateMachine = &recorder{}
 		raft.SetSnapshotThreshold(4096)
-		raft.logs = bigLogs(30, 2)
+		raft.setEntries(bigLogs(30, 2))
 		raft.commitIndex = 30
 
 		go raft.Apply()
@@ -1170,7 +1170,7 @@ func TestSnapshot(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.stateMachine = &recorder{}
 		raft.SetSnapshotThreshold(100)
-		raft.logs = bigLogs(10, 1)
+		raft.setEntries(bigLogs(10, 1))
 		raft.commitIndex = 10
 
 		go raft.Apply()
@@ -1191,7 +1191,7 @@ func TestSnapshot(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.stateMachine = &recorder{}
 		raft.SetSnapshotThreshold(1024)
-		raft.logs = bigLogs(10, 1)
+		raft.setEntries(bigLogs(10, 1))
 		raft.commitIndex = 10
 
 		go raft.Apply()
@@ -1528,6 +1528,36 @@ func TestBecomeLeader(t *testing.T) {
 
 		if len(r.logs) != 1 || r.logs[0].Cmd != "" || r.logs[0].Term != r.currentTerm {
 			t.Errorf("log: expected one empty entry for term %d, got %v", r.currentTerm, r.logs)
+		}
+	})
+}
+
+func TestLogBytes(t *testing.T) {
+	size := func(entries []*proto.LogEntry) int {
+		total := 0
+		for _, e := range entries {
+			total += protobuf.Size(e)
+		}
+
+		return total
+	}
+
+	t.Run("follows appends, truncations and resets", func(t *testing.T) {
+		var l logState
+
+		l.addEntries(makeLogs()...)
+		if l.logBytes != size(makeLogs()) {
+			t.Errorf("after append: expected %d, got %d", size(makeLogs()), l.logBytes)
+		}
+
+		l.truncateFrom(3)
+		if l.logBytes != size(makeLogs()[:2]) {
+			t.Errorf("after truncate: expected %d, got %d", size(makeLogs()[:2]), l.logBytes)
+		}
+
+		l.setEntries(makeLogs()[4:])
+		if l.logBytes != size(makeLogs()[4:]) {
+			t.Errorf("after reset: expected %d, got %d", size(makeLogs()[4:]), l.logBytes)
 		}
 	})
 }

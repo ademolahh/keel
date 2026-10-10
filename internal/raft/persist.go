@@ -376,7 +376,7 @@ func (r *Raft) readPersist() error {
 		r.lastIncludedIndex = state.LogBase
 
 		if state.Logs != nil {
-			r.logs = state.Logs
+			r.setEntries(state.Logs)
 		}
 	}
 
@@ -400,9 +400,9 @@ func (r *Raft) readPersist() error {
 
 	if index > r.lastIncludedIndex {
 		if index <= r.lastIndex() && r.termAt(index) == snapshot.LastIncludedTerm {
-			r.logs = slices.Clone(r.entriesFrom(index + 1))
+			r.setEntries(slices.Clone(r.entriesFrom(index + 1)))
 		} else {
-			r.logs = nil
+			r.setEntries(nil)
 		}
 	}
 
