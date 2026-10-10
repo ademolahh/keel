@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"cmp"
 	"context"
 	"maps"
 	"math/rand"
@@ -201,7 +202,7 @@ func (r *Raft) advanceCommit() {
 		acked[p.id] = r.matchIndex[p.id]
 	}
 
-	n := match(acked, r.syncedIndex)[majority(len(r.peers))-1]
+	n := match(acked, r.syncedIndex)[quorum(len(r.peers)+1)-1]
 
 	if n > r.commitIndex && r.termAt(n) == r.currentTerm {
 		r.commitIndex = n
@@ -226,14 +227,14 @@ func match(matchIndex map[uint64]uint64, leader uint64) []uint64 {
 	index = append(index, leader)
 
 	slices.SortFunc(index, func(a, b uint64) int {
-		return int(b - a)
+		return cmp.Compare(b, a)
 	})
 
 	return index
 }
 
-func majority(size int) int {
-	return ((size + 1) / 2) + 1
+func quorum(clusterSize int) int {
+	return clusterSize/2 + 1
 }
 
 func getMatchingTermIndex(logs []*proto.LogEntry, term uint64, prevLogIndex int) *uint64 {

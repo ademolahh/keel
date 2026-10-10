@@ -238,7 +238,7 @@ func (r *Raft) StartElection() {
 		LastLogTerm:  lastLogTerm,
 	}
 
-	majority := majority(len(peers))
+	need := quorum(len(peers) + 1)
 
 	for _, peer := range peers {
 
@@ -265,7 +265,7 @@ func (r *Raft) StartElection() {
 
 			if res.VoteGranted {
 				votes += 1
-				if votes >= majority {
+				if votes >= need {
 					r.becomeLeader()
 					return
 				}
@@ -433,7 +433,7 @@ func (r *Raft) confirmLeadership(ctx context.Context, term, round uint64) error 
 			}
 		}
 
-		return acks >= majority(len(r.peers))
+		return acks >= quorum(len(r.peers)+1)
 	})
 	if err != nil {
 		return ErrNoQuorum

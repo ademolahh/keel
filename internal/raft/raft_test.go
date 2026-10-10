@@ -303,9 +303,9 @@ func TestAppend(t *testing.T) {
 			}
 		}
 
-		majority := majority(size - 1)
-		if cmdEntered < majority {
-			t.Errorf("command entered: expected %d, received: %d", majority, cmdEntered)
+		need := quorum(size)
+		if cmdEntered < need {
+			t.Errorf("command entered: expected %d, received: %d", need, cmdEntered)
 		}
 	})
 
@@ -1697,20 +1697,14 @@ func TestMatch(t *testing.T) {
 	})
 }
 
-func TestMajority(t *testing.T) {
-	// majority takes the number of peers, which excludes this node
+func TestQuorum(t *testing.T) {
+	cases := []struct{ size, want int }{{1, 1}, {3, 2}, {4, 3}, {5, 3}}
 
-	t.Run("needs three of four nodes", func(t *testing.T) {
-		if got := majority(3); got != 3 {
-			t.Errorf("majority: expected 3, got %d", got)
+	for _, tc := range cases {
+		if got := quorum(tc.size); got != tc.want {
+			t.Errorf("quorum(%d): expected %d, got %d", tc.size, tc.want, got)
 		}
-	})
-
-	t.Run("needs three of five nodes", func(t *testing.T) {
-		if got := majority(4); got != 3 {
-			t.Errorf("majority: expected 3, got %d", got)
-		}
-	})
+	}
 }
 
 func TestPersist(t *testing.T) {
