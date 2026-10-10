@@ -215,12 +215,12 @@ func TestRunElectionTimer(t *testing.T) {
 
 	t.Cleanup(func() {
 		for _, node := range nodes {
-			node.raft.Kill()
+			node.raft.Stop()
 		}
 	})
 
 	for _, node := range nodes {
-		go node.raft.RunElectionTimer()
+		go node.raft.runElectionTimer()
 	}
 
 	// keep checking until there is a leader
@@ -372,8 +372,8 @@ func TestAppend(t *testing.T) {
 		raft, _ := newRaft(t, DEFAULT_LEADER_ID, DEFAULT_CLUSTER_SIZE)
 		raft.state = Leader
 		raft.leaderId = raft.id
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		// stand in for a heartbeat committing the entry; no peer is reachable,
 		// so Append's own rounds never can
@@ -398,8 +398,8 @@ func TestAppend(t *testing.T) {
 		raft, _ := newRaft(t, DEFAULT_LEADER_ID, DEFAULT_CLUSTER_SIZE)
 		raft.state = Leader
 		raft.leaderId = raft.id
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		// stand in for a newer leader overwriting the entry and committing its
 		// own at the same position
@@ -431,9 +431,9 @@ func TestAppend(t *testing.T) {
 		raft.SetSnapshotThreshold(1)
 		manualLeader(raft, 1)
 
-		go raft.Apply()
-		go raft.RunSync()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		go raft.runSync()
+		t.Cleanup(raft.Stop)
 
 		const writes = 50
 
@@ -824,8 +824,8 @@ func TestRunHeartbeat(t *testing.T) {
 		leader.initMatchIndex()
 		leader.startReplicators()
 
-		go leader.RunHeartbeat()
-		t.Cleanup(leader.Kill)
+		go leader.runHeartbeat()
+		t.Cleanup(leader.Stop)
 
 		follower := nodes[2].raft
 
@@ -848,14 +848,42 @@ func TestRunHeartbeat(t *testing.T) {
 	})
 }
 
-func TestKill(t *testing.T) {
+func TestStart(t *testing.T) {
+	t.Run("elects a leader that accepts writes", func(t *testing.T) {
+		nodes, _ := idleCluster(t, 3, nil)
+		for _, n := range nodes {
+			n.raft.Start()
+		}
+
+		var leader *Raft
+		ok := waitFor(t, 3*time.Second, func() bool {
+			for _, n := range nodes {
+				if n.raft.IsLeader() {
+					leader = n.raft
+					return true
+				}
+			}
+			return false
+		})
+		if !ok {
+			t.Fatal("leader: expected one within 3s")
+		}
+
+		if err := leader.Append(writeContext(t), "set a=1"); err != nil {
+			t.Errorf("append: unexpected error: %v", err)
+		}
+	})
+}
+
+func TestStop(t *testing.T) {
 	loops := []struct {
 		name string
 		run  func(*Raft)
 	}{
-		{"stops the election timer", (*Raft).RunElectionTimer},
-		{"stops the heartbeat loop", (*Raft).RunHeartbeat},
-		{"stops the apply loop", (*Raft).Apply},
+		{"stops the election timer", (*Raft).runElectionTimer},
+		{"stops the heartbeat loop", (*Raft).runHeartbeat},
+		{"stops the apply loop", (*Raft).runApplier},
+		{"stops the sync loop", (*Raft).runSync},
 	}
 
 	for _, loop := range loops {
@@ -868,12 +896,12 @@ func TestKill(t *testing.T) {
 				close(done)
 			}()
 
-			raft.Kill()
+			raft.Stop()
 
 			select {
 			case <-done:
 			case <-time.After(time.Second):
-				t.Error("loop: expected to return after Kill, still running")
+				t.Error("loop: expected to return after Stop, still running")
 			}
 		})
 	}
@@ -881,8 +909,8 @@ func TestKill(t *testing.T) {
 	t.Run("can be called more than once", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
-		raft.Kill()
-		raft.Kill()
+		raft.Stop()
+		raft.Stop()
 	})
 }
 
@@ -1035,8 +1063,8 @@ func TestApply(t *testing.T) {
 		raft.logs = makeLogs()
 		raft.commitIndex = 3
 
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		want := []string{"set a=1", "set b=2", "set c=3"}
 
@@ -1060,8 +1088,8 @@ func TestApply(t *testing.T) {
 			raft.logs = append(raft.logs, &proto.LogEntry{Term: 1, Cmd: fmt.Sprintf("set k=%d", i)})
 		}
 
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		raft.mu.Lock()
 		raft.commitIndex = n
@@ -1083,8 +1111,8 @@ func TestApply(t *testing.T) {
 		raft.logs = []*proto.LogEntry{{Term: 1, Cmd: ""}, {Term: 1, Cmd: "set a=1"}}
 		raft.commitIndex = 2
 
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -1107,8 +1135,8 @@ func TestSnapshot(t *testing.T) {
 		raft.setEntries(bigLogs(30, 2))
 		raft.commitIndex = 30
 
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		ok := waitFor(t, time.Second, func() bool {
 			raft.mu.Lock()
@@ -1148,8 +1176,8 @@ func TestSnapshot(t *testing.T) {
 		raft.setEntries(bigLogs(30, 2))
 		raft.commitIndex = 30
 
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -1175,8 +1203,8 @@ func TestSnapshot(t *testing.T) {
 		raft.setEntries(bigLogs(10, 1))
 		raft.commitIndex = 10
 
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		ok := waitFor(t, time.Second, func() bool {
 			raft.mu.Lock()
@@ -1196,8 +1224,8 @@ func TestSnapshot(t *testing.T) {
 		raft.setEntries(bigLogs(10, 1))
 		raft.commitIndex = 10
 
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -1388,9 +1416,9 @@ func TestRunSync(t *testing.T) {
 		raft.state = Leader
 		raft.leaderId = raft.id
 
-		go raft.Apply()
-		go raft.RunSync()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		go raft.runSync()
+		t.Cleanup(raft.Stop)
 
 		const writes = 50
 
@@ -1695,8 +1723,8 @@ func TestPersist(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 
-		go before.RunSync()
-		t.Cleanup(before.Kill)
+		go before.runSync()
+		t.Cleanup(before.Stop)
 
 		before.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 3, CandidateId: 2})
 		before.AppendEntries(context.Background(),
@@ -1732,8 +1760,8 @@ func TestRestart(t *testing.T) {
 			t.Fatalf("new: %v", err)
 		}
 
-		go before.RunSync()
-		t.Cleanup(before.Kill)
+		go before.runSync()
+		t.Cleanup(before.Stop)
 
 		before.InstallSnapshot(context.Background(), snapshotRequest(3, 4, 3, "state"))
 		entry := &proto.LogEntry{Term: 3, Cmd: "set x=1"}
@@ -1758,8 +1786,8 @@ func TestRestart(t *testing.T) {
 			t.Errorf("snapshot in memory: expected one through 4, got %v", after.snapshot)
 		}
 
-		go after.Apply()
-		t.Cleanup(after.Kill)
+		go after.runApplier()
+		t.Cleanup(after.Stop)
 
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -2164,8 +2192,8 @@ func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
 		t.Fatalf("raft initialization failed: %v", err)
 	}
 
-	go raft.RunSync()
-	t.Cleanup(raft.Kill)
+	go raft.runSync()
+	t.Cleanup(raft.Stop)
 
 	return raft, peers
 }
@@ -2182,6 +2210,20 @@ func cluster(t *testing.T, n int, delays map[uint64]time.Duration) (map[uint64]*
 }
 
 func clusterWithOptions(t *testing.T, n int, serverOpts map[uint64][]grpc.ServerOption) (map[uint64]*node, map[uint64]string) {
+	t.Helper()
+
+	nodes, peers := idleCluster(t, n, serverOpts)
+	for _, node := range nodes {
+		go node.raft.runApplier()
+		go node.raft.runSync()
+	}
+
+	return nodes, peers
+}
+
+// idleCluster starts n serving nodes with none of their background loops
+// running.
+func idleCluster(t *testing.T, n int, serverOpts map[uint64][]grpc.ServerOption) (map[uint64]*node, map[uint64]string) {
 	t.Helper()
 
 	peers := make(map[uint64]string, n)
@@ -2210,9 +2252,7 @@ func clusterWithOptions(t *testing.T, n int, serverOpts map[uint64][]grpc.Server
 		s := start(t, r, lst, serverOpts[id]...)
 		nodes[id] = &node{raft: r, stop: s}
 
-		go r.Apply()
-		go r.RunSync()
-		t.Cleanup(r.Kill)
+		t.Cleanup(r.Stop)
 	}
 
 	return nodes, peers

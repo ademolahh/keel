@@ -47,10 +47,7 @@ func Serve() error {
 		return err
 	}
 
-	go raft.RunElectionTimer()
-	go raft.Apply()
-	go raft.RunSync()
-	go raft.RunHeartbeat()
+	raft.Start()
 
 	httpPort := os.Getenv("HTTP_PORT")
 	httpServer, httpErr := startHTTP(httpPort, New(raft, kv, httpPeers), m)
@@ -111,6 +108,6 @@ func shutdown(httpServer *http.Server, r *raft.Raft, grpcServer *grpc.Server) {
 		slog.Error("http shutdown", "err", err)
 	}
 
-	r.Kill()
+	r.Stop()
 	grpcServer.GracefulStop()
 }

@@ -509,8 +509,8 @@ func TestAppendEntries(t *testing.T) {
 		}
 
 		persister.gate = gate
-		go raft.RunSync()
-		t.Cleanup(raft.Kill)
+		go raft.runSync()
+		t.Cleanup(raft.Stop)
 
 		done := make(chan *proto.AppendEntriesResponse, 1)
 		go func() {
@@ -740,8 +740,8 @@ func TestInstallSnapshot(t *testing.T) {
 		raft.stateMachine = sm
 		raft.currentTerm = 3
 
-		go raft.Apply()
-		t.Cleanup(raft.Kill)
+		go raft.runApplier()
+		t.Cleanup(raft.Stop)
 
 		raft.InstallSnapshot(context.Background(), snapshotRequest(3, 4, 3, "state"))
 

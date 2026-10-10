@@ -64,7 +64,7 @@ type Raft struct {
 	snapshotState
 	leaderState
 
-	killOnce sync.Once
+	stopOnce sync.Once
 	done     chan struct{}
 	mu       sync.Mutex
 
@@ -163,11 +163,18 @@ func New(id uint64, clients map[uint64]proto.RaftClient, stateMachine StateMachi
 	return r, nil
 }
 
-func (r *Raft) Kill() {
-	r.killOnce.Do(func() { close(r.done) })
+func (r *Raft) Start() {
+	go r.runElectionTimer()
+	go r.runHeartbeat()
+	go r.runApplier()
+	go r.runSync()
 }
 
-func (r *Raft) RunElectionTimer() {
+func (r *Raft) Stop() {
+	r.stopOnce.Do(func() { close(r.done) })
+}
+
+func (r *Raft) runElectionTimer() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -190,7 +197,7 @@ func (r *Raft) RunElectionTimer() {
 	}
 }
 
-func (r *Raft) RunHeartbeat() {
+func (r *Raft) runHeartbeat() {
 	ticker := time.NewTicker(30 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -530,7 +537,7 @@ func (r *Raft) Snapshot() {
 	r.log.Info("saved snapshot", "index", index, "term", term, "log_bytes", size)
 }
 
-func (r *Raft) RunSync() {
+func (r *Raft) runSync() {
 	for {
 		select {
 		case <-r.done:
@@ -560,7 +567,7 @@ func (r *Raft) RunSync() {
 	}
 }
 
-func (r *Raft) Apply() {
+func (r *Raft) runApplier() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
