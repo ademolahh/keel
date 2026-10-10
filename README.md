@@ -85,13 +85,13 @@ The arrival rate steps up from 1,000 to 2,000, 4,000, 6,000 and 8,000 iterations
 
 | | |
 |---|---|
-| Requests | 1,264,629 (7,900 a second) |
-| Iterations (one set and one get) | 632,314 (3,950 a second) |
+| Requests | 1,264,125 (7,900 a second) |
+| Iterations (one set and one get) | 632,062 (3,950 a second) |
 | Failed requests | 0 |
-| Failed checks | 0 of 1,896,942 |
-| Latency p50 / p90 / p95 / p99 | 1.93 / 3.35 / 3.96 / 6.21 ms |
-| Latency max | 122 ms |
-| Dropped iterations | 185 |
+| Failed checks | 0 of 1,896,186 |
+| Latency p50 / p90 / p95 / p99 | 1.25 / 1.64 / 2.04 / 6.24 ms |
+| Latency max | 149 ms |
+| Dropped iterations | 437 |
 
 Neither threshold was crossed, so the run completed.
 
@@ -99,7 +99,7 @@ Neither threshold was crossed, so the run completed.
 
 - Everything ran on one machine, so there is no real network latency between nodes, and k6 competes with the nodes for CPU.
 - fsync goes to Docker Desktop's virtual disk, which may not reach the physical disk the way it would on a dedicated host. Expect higher write latency on real hardware.
-- 3,950 iterations a second is the average over the whole ramp, not the peak. k6 dropped 185 iterations that could not start on schedule.
+- 3,950 iterations a second is the average over the whole ramp, not the peak. k6 dropped 437 iterations that could not start on schedule.
 - Requests went straight to the leader, so requests passing through a follower were not exercised.
 - No node failed during the run.
 
