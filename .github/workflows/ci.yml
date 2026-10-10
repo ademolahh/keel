@@ -39,7 +39,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
-          version: v2.13
+          version: v2.14
 
   scan:
     needs: [test, golangci]
