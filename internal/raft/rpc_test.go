@@ -69,6 +69,39 @@ func TestRequestVote(t *testing.T) {
 		}
 	})
 
+	t.Run("ignores a higher term while it hears from a leader", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{Term: 2, LeaderId: 3})
+
+		res, _ := raft.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 3, CandidateId: 2})
+
+		if res.VoteGranted || raft.currentTerm != 2 || raft.leaderId != 3 {
+			t.Errorf("expected the vote refused in term 2 under leader 3, got granted %v, term %d, leader %d",
+				res.VoteGranted, raft.currentTerm, raft.leaderId)
+		}
+
+		raft.leaderContact = time.Now().Add(-electionTimeoutMin)
+
+		res, _ = raft.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 3, CandidateId: 2})
+
+		if !res.VoteGranted || raft.currentTerm != 3 {
+			t.Errorf("after the leader went quiet: expected the vote granted in term 3, got %v in term %d",
+				res.VoteGranted, raft.currentTerm)
+		}
+	})
+
+	t.Run("a leader ignores a higher term", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		leader := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 2)
+
+		res, _ := leader.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 3, CandidateId: 2})
+
+		state, term, _ := snapshot(leader)
+		if res.VoteGranted || state != Leader || term != 2 {
+			t.Errorf("expected to stay leader in term 2, got granted %v, %s in term %d", res.VoteGranted, state, term)
+		}
+	})
+
 	t.Run("adopts a higher term and grants the vote", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 

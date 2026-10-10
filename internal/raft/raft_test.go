@@ -169,8 +169,11 @@ func TestStartElection(t *testing.T) {
 		waitForLeader(t, nodes[DEFAULT_LEADER_ID].raft, lag/4)
 		_, firstTerm, _ := snapshot(nodes[DEFAULT_LEADER_ID].raft)
 
+		nodes[DEFAULT_LEADER_ID].stop()
+		time.Sleep(electionTimeoutMin)
+
 		nodes[5].raft.StartElection()
-		waitForLeader(t, nodes[5].raft, lag/4)
+		waitForLeader(t, nodes[5].raft, 2*lag)
 		_, secondTerm, _ := snapshot(nodes[5].raft)
 
 		if firstTerm >= secondTerm {
@@ -482,7 +485,7 @@ func TestAppend(t *testing.T) {
 			return len(leader.pending) == 1
 		})
 
-		leader.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 5, CandidateId: 2})
+		leader.AppendEntries(context.Background(), &proto.AppendEntriesRequest{Term: 5, LeaderId: 2})
 
 		if err := <-result; !errors.Is(err, ErrLost) {
 			t.Errorf("after stepping down: expected %v, got %v", ErrLost, err)
@@ -1321,7 +1324,7 @@ func TestStepDown(t *testing.T) {
 		})
 
 		start := time.Now()
-		r.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 5, CandidateId: 2})
+		r.AppendEntries(context.Background(), &proto.AppendEntriesRequest{Term: 5, LeaderId: 2})
 
 		select {
 		case ok := <-result:

@@ -22,6 +22,13 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 		}
 	}()
 
+	if req.Term > r.currentTerm && (r.state == Leader || time.Since(r.leaderContact) < electionTimeoutMin) {
+		return &proto.RequestVoteResponse{
+			VoteGranted: false,
+			Term:        r.currentTerm,
+		}, nil
+	}
+
 	if r.currentTerm > req.Term {
 		return &proto.RequestVoteResponse{
 			VoteGranted: false,
@@ -116,6 +123,7 @@ func (r *Raft) appendEntries(req *proto.AppendEntriesRequest) (*proto.AppendEntr
 	r.leaderId = req.LeaderId
 	r.state = Follower
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
+	r.leaderContact = time.Now()
 
 	prevLogIndex, prevLogTerm, entries := req.PrevLogIndex, req.PrevLogTerm, req.Entries
 	if prevLogIndex < r.lastIncludedIndex {
@@ -213,6 +221,7 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 	r.leaderId = req.LeaderId
 	r.state = Follower
 	r.electionDeadline = time.Now().Add(randomElectionTimeout())
+	r.leaderContact = time.Now()
 
 	reply := &proto.InstallSnapshotResponse{Term: r.currentTerm}
 

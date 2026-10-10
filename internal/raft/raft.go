@@ -58,6 +58,7 @@ type Raft struct {
 	leaderChanges uint64
 
 	electionDeadline time.Time
+	leaderContact    time.Time
 	voteTimeout      time.Duration
 
 	logState
