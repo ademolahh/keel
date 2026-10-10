@@ -30,12 +30,7 @@ func (r *Raft) RequestVote(ctx context.Context, req *proto.RequestVoteRequest) (
 
 	// candidate has the higher term
 	if r.currentTerm < req.Term {
-		r.currentTerm = req.Term
-		r.votedFor = nil
-		r.state = Follower
-		r.leaderId = 0
-		dirty = true
-		r.log.Debug("adopted newer term", "term", req.Term, "from", "vote request")
+		r.becomeFollower(req.Term, "newer term in vote request")
 	}
 
 	lastLogIndex := r.lastIndex()
@@ -165,10 +160,8 @@ func (r *Raft) appendEntries(req *proto.AppendEntriesRequest) (*proto.AppendEntr
 	}
 
 	if req.Term > r.currentTerm {
-		r.currentTerm = req.Term
-		r.votedFor = nil
-		stateDirty = true
-		r.log.Debug("adopted newer term", "term", req.Term, "from", "append entries")
+		r.becomeFollower(req.Term, "newer term in append entries")
+		r.leaderId = req.LeaderId
 	}
 
 	// if log and term is the same, then all entry store the same command
@@ -219,10 +212,7 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 	}
 
 	if req.Term > r.currentTerm {
-		r.currentTerm = req.Term
-		r.votedFor = nil
-		r.persistState()
-		r.log.Debug("adopted newer term", "term", req.Term, "from", "install snapshot")
+		r.becomeFollower(req.Term, "newer term in install snapshot")
 	}
 
 	if r.leaderId != req.LeaderId {

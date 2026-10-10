@@ -278,13 +278,7 @@ func (r *Raft) StartElection() {
 			defer r.mu.Unlock()
 
 			if res.Term > r.currentTerm {
-				r.currentTerm = res.Term
-				r.state = Follower
-				r.votedFor = nil
-				r.leaderId = 0
-				r.electionDeadline = time.Now().Add(randomElectionTimeout())
-				r.persistState()
-				r.log.Info("stepping down", "term", res.Term, "reason", "higher term in vote reply")
+				r.becomeFollower(res.Term, "higher term in vote reply")
 			}
 
 			if r.state != Candidate || r.currentTerm != term {
@@ -294,24 +288,62 @@ func (r *Raft) StartElection() {
 			if res.VoteGranted {
 				votes += 1
 				if votes >= majority {
-					r.state = Leader
-					r.leaderId = r.id
-					r.leaderChanges++
-					r.log.Info("became leader", "term", term)
-
-					for _, p := range r.peers {
-						r.nextIndex[p.id] = r.lastIndex() + 1
-						r.matchIndex[p.id] = 0
-					}
-
-					r.logs = append(r.logs, &proto.LogEntry{Term: term})
-					r.persistLog(r.lastIndex())
-					r.wakeReplicators()
+					r.becomeLeader()
 					return
 				}
 			}
 		}(peer.client)
 	}
+}
+
+func (r *Raft) becomeFollower(term uint64, reason string) {
+	if r.state == Leader {
+		r.electionDeadline = time.Now().Add(randomElectionTimeout())
+	}
+
+	r.state = Follower
+	r.leaderId = 0
+
+	if term > r.currentTerm {
+		r.currentTerm = term
+		r.votedFor = nil
+		r.persistState()
+	}
+
+	r.failPending()
+	r.stopReplicators()
+	r.log.Info("became follower", "term", term, "reason", reason)
+}
+
+func (r *Raft) becomeLeader() {
+	r.state = Leader
+	r.leaderId = r.id
+	r.leaderChanges++
+	r.log.Info("became leader", "term", r.currentTerm)
+
+	for _, p := range r.peers {
+		r.nextIndex[p.id] = r.lastIndex() + 1
+		r.matchIndex[p.id] = 0
+	}
+
+	r.logs = append(r.logs, &proto.LogEntry{Term: r.currentTerm})
+	r.persistLog(r.lastIndex())
+	r.wakeReplicators()
+}
+
+func (r *Raft) failPending() {
+	for index, p := range r.pending {
+		p.done <- false
+		delete(r.pending, index)
+	}
+}
+
+func (r *Raft) stopReplicators() {
+	for _, wake := range r.wake {
+		close(wake)
+	}
+
+	r.wake = nil
 }
 
 var (
@@ -330,10 +362,6 @@ func (r *Raft) Append(cmd string) bool {
 	r.logs = append(r.logs, &proto.LogEntry{Term: term, Cmd: cmd})
 	index := r.lastIndex()
 	r.persistLog(index)
-
-	if old, ok := r.pending[index]; ok {
-		old.done <- false
-	}
 
 	done := make(chan bool, 1)
 	r.pending[index] = pendingAppend{term: term, done: done}
@@ -595,13 +623,6 @@ func (r *Raft) Apply() {
 			}
 
 			r.mu.Lock()
-			for index, p := range r.pending {
-				if index <= snapshot.LastIncludedIndex {
-					p.done <- false
-					delete(r.pending, index)
-				}
-			}
-
 			r.lastApplied = max(r.lastApplied, snapshot.LastIncludedIndex)
 			r.log.Info("restored snapshot", "index", snapshot.LastIncludedIndex, "term", snapshot.LastIncludedTerm)
 			close(r.applied)
@@ -704,13 +725,7 @@ func (r *Raft) replicate(ctx context.Context, p peer) {
 
 		r.mu.Lock()
 		if res.Term > r.currentTerm {
-			r.state = Follower
-			r.currentTerm = res.Term
-			r.votedFor = nil
-			r.leaderId = 0
-			r.electionDeadline = time.Now().Add(randomElectionTimeout())
-			r.persistState()
-			r.log.Info("stepping down", "term", res.Term, "reason", "higher term in append reply")
+			r.becomeFollower(res.Term, "higher term in append reply")
 			r.mu.Unlock()
 			return
 		}
@@ -786,13 +801,7 @@ func (r *Raft) sendSnapshot(ctx context.Context, p peer, term uint64) bool {
 
 		r.mu.Lock()
 		if res.Term > r.currentTerm {
-			r.state = Follower
-			r.currentTerm = res.Term
-			r.votedFor = nil
-			r.leaderId = 0
-			r.electionDeadline = time.Now().Add(randomElectionTimeout())
-			r.persistState()
-			r.log.Info("stepping down", "term", res.Term, "reason", "higher term in snapshot reply")
+			r.becomeFollower(res.Term, "higher term in snapshot reply")
 			r.mu.Unlock()
 			return false
 		}

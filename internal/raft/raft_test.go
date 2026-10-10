@@ -1222,6 +1222,56 @@ func TestSendSnapshot(t *testing.T) {
 }
 
 func TestStepDown(t *testing.T) {
+	t.Run("fails waiting writes at once", func(t *testing.T) {
+		nodes, _ := cluster(t, 3, nil)
+		nodes[2].stop()
+		nodes[3].stop()
+
+		r := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
+
+		result := make(chan bool, 1)
+		go func() { result <- r.Append("set a=1") }()
+
+		waitFor(t, time.Second, func() bool {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+
+			return len(r.pending) == 1
+		})
+
+		start := time.Now()
+		r.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 5, CandidateId: 2})
+
+		select {
+		case ok := <-result:
+			if ok {
+				t.Error("append: expected false after stepping down")
+			}
+			if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+				t.Errorf("append: expected to fail at once, took %v", elapsed)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("append: expected a result after stepping down")
+		}
+	})
+
+	t.Run("keeps a follower's election deadline when it only sees a higher term", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.logs = makeLogs()
+		deadline := time.Now().Add(time.Hour)
+		raft.electionDeadline = deadline
+
+		raft.RequestVote(context.Background(), &proto.RequestVoteRequest{
+			Term: 4, CandidateId: 2, LastLogIndex: 1, LastLogTerm: 1,
+		})
+
+		if raft.currentTerm != 4 || !raft.electionDeadline.Equal(deadline) {
+			t.Errorf("expected term 4 with the deadline unchanged, got term %d deadline moved by %v",
+				raft.currentTerm, raft.electionDeadline.Sub(deadline))
+		}
+	})
+
 	t.Run("waits a full election timeout after a vote reply with a higher term", func(t *testing.T) {
 		nodes, _ := cluster(t, 3, nil)
 		for _, id := range []uint64{2, 3} {
