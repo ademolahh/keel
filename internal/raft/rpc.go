@@ -2,6 +2,7 @@ package raft
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -243,13 +244,11 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 
 	data, err := protobuf.Marshal(snapshot)
 	if err != nil {
-		r.log.Error("snapshot not saved", "index", snapshot.LastIncludedIndex, "err", err)
-		return reply, nil
+		panic(fmt.Sprintf("persist: %v", err))
 	}
 
 	if err := r.persister.SaveSnapshot(data); err != nil {
-		r.log.Error("snapshot not saved", "index", snapshot.LastIncludedIndex, "err", err)
-		return reply, nil
+		panic(fmt.Sprintf("persist: %v", err))
 	}
 
 	if snapshot.LastIncludedIndex <= r.lastIndex() && r.termAt(snapshot.LastIncludedIndex) == snapshot.LastIncludedTerm {

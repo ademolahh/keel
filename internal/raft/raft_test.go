@@ -1685,7 +1685,7 @@ func TestMajority(t *testing.T) {
 
 func TestPersist(t *testing.T) {
 	t.Run("restores term, vote and log after a restart", func(t *testing.T) {
-		persister := NewFilePersister(t.TempDir(), t.TempDir())
+		persister := openPersister(t, t.TempDir(), t.TempDir())
 		peers := map[uint64]string{1: "localhost:0", 2: "localhost:0"}
 
 		before, err := New(1, peers, &kv.KV{}, persister)
@@ -1725,7 +1725,7 @@ func TestRestart(t *testing.T) {
 	t.Run("loads the snapshot and the log after it", func(t *testing.T) {
 		dir := t.TempDir()
 
-		before, err := New(1, peers, &kv.KV{}, NewFilePersister(dir, dir))
+		before, err := New(1, peers, &kv.KV{}, openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1740,7 +1740,7 @@ func TestRestart(t *testing.T) {
 		})
 
 		sm := &recorder{}
-		after, err := New(1, peers, sm, NewFilePersister(dir, dir))
+		after, err := New(1, peers, sm, openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1776,11 +1776,11 @@ func TestRestart(t *testing.T) {
 
 	t.Run("keeps entries after a matching snapshot saved just before a crash", func(t *testing.T) {
 		dir := t.TempDir()
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 		p.SaveLog(1, makeLogs())
 		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 2}))
 
-		raft, err := New(1, peers, &kv.KV{}, NewFilePersister(dir, dir))
+		raft, err := New(1, peers, &kv.KV{}, openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1794,11 +1794,11 @@ func TestRestart(t *testing.T) {
 
 	t.Run("drops the log when the snapshot saved just before a crash does not match it", func(t *testing.T) {
 		dir := t.TempDir()
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 		p.SaveLog(1, makeLogs())
 		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 3}))
 
-		raft, err := New(1, peers, &kv.KV{}, NewFilePersister(dir, dir))
+		raft, err := New(1, peers, &kv.KV{}, openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1810,9 +1810,9 @@ func TestRestart(t *testing.T) {
 
 	t.Run("fails when the log starts after an entry and there is no snapshot", func(t *testing.T) {
 		dir := t.TempDir()
-		NewFilePersister(dir, dir).ResetLog(4, nil)
+		openPersister(t, dir, dir).ResetLog(4, nil)
 
-		if _, err := New(1, peers, &kv.KV{}, NewFilePersister(dir, dir)); err == nil {
+		if _, err := New(1, peers, &kv.KV{}, openPersister(t, dir, dir)); err == nil {
 			t.Error("new: expected an error, got none")
 		}
 	})

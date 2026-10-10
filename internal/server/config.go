@@ -36,7 +36,12 @@ func newRaft(id uint64, sm raft.StateMachine, m *metrics.RaftCollector) (*raft.R
 		}
 	}
 
-	persister := m.Persister(raft.NewFilePersister(persistDir, snapshotDir))
+	files, err := raft.OpenFilePersister(persistDir, snapshotDir)
+	if err != nil {
+		return nil, err
+	}
+
+	persister := m.Persister(files)
 
 	r, err := raft.New(id, peers, sm, persister, grpc.WithChainUnaryInterceptor(m.Interceptor()))
 	if err != nil {

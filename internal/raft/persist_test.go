@@ -1,6 +1,7 @@
 package raft
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -12,7 +13,7 @@ import (
 
 func TestFilePersister(t *testing.T) {
 	t.Run("loads nothing before the first save", func(t *testing.T) {
-		p := NewFilePersister(t.TempDir(), t.TempDir())
+		p := openPersister(t, t.TempDir(), t.TempDir())
 
 		state, err := p.Load()
 		if err != nil {
@@ -25,7 +26,7 @@ func TestFilePersister(t *testing.T) {
 	})
 
 	t.Run("loads the last term and vote saved", func(t *testing.T) {
-		p := NewFilePersister(t.TempDir(), t.TempDir())
+		p := openPersister(t, t.TempDir(), t.TempDir())
 
 		p.SaveState(1, nil)
 		p.SaveState(2, uint64Ptr(3))
@@ -43,7 +44,7 @@ func TestFilePersister(t *testing.T) {
 
 	t.Run("keeps the term and vote in a file of their own", func(t *testing.T) {
 		dir := t.TempDir()
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 
 		p.SaveLog(1, makeLogs())
 		before, err := os.ReadFile(filepath.Join(dir, "raft.log"))
@@ -64,39 +65,39 @@ func TestFilePersister(t *testing.T) {
 
 	t.Run("appends entries after the ones already saved", func(t *testing.T) {
 		dir := t.TempDir()
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 
 		p.SaveLog(1, makeLogs()[:2])
 		p.SaveLog(3, makeLogs()[2:])
 
-		assertLogs(t, load(t, NewFilePersister(dir, dir)).Logs, makeLogs())
+		assertLogs(t, load(t, openPersister(t, dir, dir)).Logs, makeLogs())
 	})
 
 	t.Run("replaces entries from the index it is given", func(t *testing.T) {
 		dir := t.TempDir()
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 
 		p.SaveLog(1, makeLogs())
 		replacement := []*proto.LogEntry{{Term: 4, Cmd: "set x=9"}}
 		p.SaveLog(3, replacement)
 
 		want := append(makeLogs()[:2], replacement...)
-		assertLogs(t, load(t, NewFilePersister(dir, dir)).Logs, want)
+		assertLogs(t, load(t, openPersister(t, dir, dir)).Logs, want)
 	})
 
 	t.Run("keeps appending after a reload", func(t *testing.T) {
 		dir := t.TempDir()
-		NewFilePersister(dir, dir).SaveLog(1, makeLogs()[:3])
+		openPersister(t, dir, dir).SaveLog(1, makeLogs()[:3])
 
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 		load(t, p)
 		p.SaveLog(4, makeLogs()[3:])
 
-		assertLogs(t, load(t, NewFilePersister(dir, dir)).Logs, makeLogs())
+		assertLogs(t, load(t, openPersister(t, dir, dir)).Logs, makeLogs())
 	})
 
 	t.Run("refuses to leave a gap in the log", func(t *testing.T) {
-		p := NewFilePersister(t.TempDir(), t.TempDir())
+		p := openPersister(t, t.TempDir(), t.TempDir())
 		p.SaveLog(1, makeLogs()[:2])
 
 		if err := p.SaveLog(4, makeLogs()[3:]); err == nil {
@@ -106,7 +107,7 @@ func TestFilePersister(t *testing.T) {
 
 	t.Run("drops a partial record left by a crash", func(t *testing.T) {
 		dir := t.TempDir()
-		NewFilePersister(dir, dir).SaveLog(1, makeLogs()[:2])
+		openPersister(t, dir, dir).SaveLog(1, makeLogs()[:2])
 
 		f, err := os.OpenFile(filepath.Join(dir, "raft.log"), os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
@@ -115,16 +116,16 @@ func TestFilePersister(t *testing.T) {
 		f.Write([]byte{9, 0, 0, 0, 1, 2})
 		f.Close()
 
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 		assertLogs(t, load(t, p).Logs, makeLogs()[:2])
 
 		p.SaveLog(3, makeLogs()[2:3])
-		assertLogs(t, load(t, NewFilePersister(dir, dir)).Logs, makeLogs()[:3])
+		assertLogs(t, load(t, openPersister(t, dir, dir)).Logs, makeLogs()[:3])
 	})
 
 	t.Run("saves the snapshot in its own directory", func(t *testing.T) {
 		dir, snapshotDir := t.TempDir(), t.TempDir()
-		p := NewFilePersister(dir, snapshotDir)
+		p := openPersister(t, dir, snapshotDir)
 		want := &proto.Snapshot{LastIncludedIndex: 5, LastIncludedTerm: 3, Data: []byte("state")}
 
 		if err := p.SaveSnapshot(snapshotBytes(t, want)); err != nil {
@@ -142,7 +143,7 @@ func TestFilePersister(t *testing.T) {
 
 	t.Run("replaces the previous snapshot", func(t *testing.T) {
 		dir := t.TempDir()
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 		want := &proto.Snapshot{LastIncludedIndex: 9, LastIncludedTerm: 4, Data: []byte("newer")}
 
 		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 5, LastIncludedTerm: 3, Data: []byte("older")}))
@@ -155,9 +156,9 @@ func TestFilePersister(t *testing.T) {
 
 	t.Run("keeps the log's first index across a reload", func(t *testing.T) {
 		dir := t.TempDir()
-		NewFilePersister(dir, dir).ResetLog(4, makeLogs()[4:])
+		openPersister(t, dir, dir).ResetLog(4, makeLogs()[4:])
 
-		state := load(t, NewFilePersister(dir, dir))
+		state := load(t, openPersister(t, dir, dir))
 
 		if state.LogBase != 4 {
 			t.Errorf("log base: expected 4, got %d", state.LogBase)
@@ -168,14 +169,14 @@ func TestFilePersister(t *testing.T) {
 
 	t.Run("saves by log index after a reset", func(t *testing.T) {
 		dir := t.TempDir()
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 
 		p.ResetLog(3, nil)
 		if err := p.SaveLog(4, makeLogs()[3:]); err != nil {
 			t.Fatalf("save log: %v", err)
 		}
 
-		state := load(t, NewFilePersister(dir, dir))
+		state := load(t, openPersister(t, dir, dir))
 		if state.LogBase != 3 {
 			t.Errorf("log base: expected 3, got %d", state.LogBase)
 		}
@@ -184,7 +185,7 @@ func TestFilePersister(t *testing.T) {
 	})
 
 	t.Run("refuses to save at or before the log's first index", func(t *testing.T) {
-		p := NewFilePersister(t.TempDir(), t.TempDir())
+		p := openPersister(t, t.TempDir(), t.TempDir())
 		p.ResetLog(4, nil)
 
 		if err := p.SaveLog(4, makeLogs()[3:]); err == nil {
@@ -193,7 +194,7 @@ func TestFilePersister(t *testing.T) {
 	})
 
 	t.Run("loads no snapshot before the first save", func(t *testing.T) {
-		data, err := NewFilePersister(t.TempDir(), t.TempDir()).LoadSnapshot()
+		data, err := openPersister(t, t.TempDir(), t.TempDir()).LoadSnapshot()
 		if err != nil || data != nil {
 			t.Errorf("snapshot: expected none, got %q (err %v)", data, err)
 		}
@@ -202,9 +203,9 @@ func TestFilePersister(t *testing.T) {
 	t.Run("loads the saved snapshot", func(t *testing.T) {
 		dir := t.TempDir()
 		want := snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 4, LastIncludedTerm: 3, Data: []byte("state")})
-		NewFilePersister(dir, dir).SaveSnapshot(want)
+		openPersister(t, dir, dir).SaveSnapshot(want)
 
-		got, err := NewFilePersister(dir, dir).LoadSnapshot()
+		got, err := openPersister(t, dir, dir).LoadSnapshot()
 		if err != nil {
 			t.Fatalf("load snapshot: %v", err)
 		}
@@ -220,8 +221,8 @@ func TestFilePersister(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 
-		if _, err := NewFilePersister(dir, dir).Load(); err == nil {
-			t.Error("load: expected an error, got none")
+		if _, err := OpenFilePersister(dir, dir); err == nil {
+			t.Error("open: expected an error, got none")
 		}
 	})
 
@@ -231,14 +232,14 @@ func TestFilePersister(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 
-		if _, err := NewFilePersister(dir, dir).Load(); err == nil {
+		if _, err := openPersister(t, dir, dir).Load(); err == nil {
 			t.Error("load: expected an error, got none")
 		}
 	})
 
 	t.Run("leaves no temporary file behind", func(t *testing.T) {
 		dir := t.TempDir()
-		p := NewFilePersister(dir, dir)
+		p := openPersister(t, dir, dir)
 
 		if err := p.SaveState(1, nil); err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -249,15 +250,27 @@ func TestFilePersister(t *testing.T) {
 		}
 	})
 
-	t.Run("fails when its directory is missing", func(t *testing.T) {
-		p := NewFilePersister(filepath.Join(t.TempDir(), "missing"), filepath.Join(t.TempDir(), "missing"))
+	t.Run("fails to open when its directory is missing", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing")
+
+		if _, err := OpenFilePersister(missing, missing); err == nil {
+			t.Error("open: expected an error, got none")
+		}
+	})
+
+	t.Run("fails to save the term or a snapshot once its directories are gone", func(t *testing.T) {
+		dir, snapshotDir := t.TempDir(), t.TempDir()
+		p := openPersister(t, dir, snapshotDir)
+
+		if err := os.RemoveAll(dir); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+		if err := os.RemoveAll(snapshotDir); err != nil {
+			t.Fatalf("remove: %v", err)
+		}
 
 		if err := p.SaveState(1, nil); err == nil {
 			t.Error("save state: expected an error, got none")
-		}
-
-		if err := p.SaveLog(1, makeLogs()); err == nil {
-			t.Error("save log: expected an error, got none")
 		}
 
 		if err := p.SaveSnapshot(nil); err == nil {
@@ -277,6 +290,20 @@ func TestReadPersist(t *testing.T) {
 }
 
 func TestPersistFailure(t *testing.T) {
+	t.Run("panics when a received snapshot cannot be saved", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 3
+		raft.persister = failingPersister{}
+
+		defer func() {
+			if recover() == nil {
+				t.Error("install snapshot: expected a panic, got none")
+			}
+		}()
+
+		raft.InstallSnapshot(context.Background(), snapshotRequest(3, 4, 3, "state"))
+	})
+
 	t.Run("panics when saving the term fails", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.persister = failingPersister{}
@@ -335,6 +362,19 @@ func (failingPersister) Sync() error {
 
 func (failingPersister) LoadSnapshot() ([]byte, error) {
 	return nil, errors.New("disk unreadable")
+}
+
+func openPersister(t *testing.T, dir, snapshotDir string) *FilePersister {
+	t.Helper()
+
+	p, err := OpenFilePersister(dir, snapshotDir)
+	if err != nil {
+		t.Fatalf("open persister: %v", err)
+	}
+
+	t.Cleanup(func() { p.Close() })
+
+	return p
 }
 
 func load(t *testing.T, p Persister) *proto.PersistentState {

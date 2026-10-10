@@ -35,11 +35,10 @@ type FilePersister struct {
 	logPath      string
 	snapshotPath string
 
+	log     *os.File
 	base    uint64
 	offsets []int64
 	size    int64
-	indexed bool
-	exists  bool
 }
 
 const (
@@ -49,12 +48,46 @@ const (
 
 var castagnoli = crc32.MakeTable(crc32.Castagnoli)
 
-func NewFilePersister(dir, snapshotDir string) *FilePersister {
-	return &FilePersister{
+func OpenFilePersister(dir, snapshotDir string) (*FilePersister, error) {
+	p := &FilePersister{
 		statePath:    filepath.Join(dir, "raft.state"),
 		logPath:      filepath.Join(dir, "raft.log"),
 		snapshotPath: filepath.Join(snapshotDir, "raft.snapshot"),
 	}
+
+	if _, err := os.Stat(p.logPath); errors.Is(err, os.ErrNotExist) {
+		if err := writeAtomic(p.logPath, binary.LittleEndian.AppendUint64(nil, 0)); err != nil {
+			return nil, err
+		}
+	}
+
+	if _, err := p.readLog(); err != nil {
+		return nil, err
+	}
+
+	if err := p.openLog(); err != nil {
+		return nil, err
+	}
+
+	return p, nil
+}
+
+func (p *FilePersister) openLog() error {
+	f, err := os.OpenFile(p.logPath, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+
+	if p.log != nil {
+		p.log.Close()
+	}
+
+	p.log = f
+	return nil
+}
+
+func (p *FilePersister) Close() error {
+	return p.log.Close()
 }
 
 func (p *FilePersister) SaveState(term uint64, votedFor *uint64) error {
@@ -80,18 +113,6 @@ func (p *FilePersister) LoadSnapshot() ([]byte, error) {
 }
 
 func (p *FilePersister) SaveLog(from uint64, entries []*proto.LogEntry) error {
-	if !p.indexed {
-		if _, err := p.readLog(); err != nil {
-			return err
-		}
-	}
-
-	if !p.exists {
-		if err := p.ResetLog(p.base, nil); err != nil {
-			return err
-		}
-	}
-
 	if from <= p.base || from-1-p.base > uint64(len(p.offsets)) {
 		return fmt.Errorf("save log from %d: entries %d to %d saved",
 			from, p.base+1, p.base+uint64(len(p.offsets)))
@@ -109,8 +130,11 @@ func (p *FilePersister) SaveLog(from uint64, entries []*proto.LogEntry) error {
 		return err
 	}
 
-	if err := p.writeLog(start, buf); err != nil {
-		p.indexed = false
+	if err := p.log.Truncate(start); err != nil {
+		return err
+	}
+
+	if _, err := p.log.WriteAt(buf, start); err != nil {
 		return err
 	}
 
@@ -130,14 +154,12 @@ func (p *FilePersister) ResetLog(base uint64, entries []*proto.LogEntry) error {
 	buf = append(buf, records...)
 
 	if err := writeAtomic(p.logPath, buf); err != nil {
-		p.indexed = false
 		return err
 	}
 
 	p.base, p.offsets, p.size = base, offsets, int64(len(buf))
-	p.indexed, p.exists = true, true
 
-	return nil
+	return p.openLog()
 }
 
 func encodeRecords(start int64, entries []*proto.LogEntry) ([]byte, []int64, error) {
@@ -160,36 +182,8 @@ func encodeRecords(start int64, entries []*proto.LogEntry) ([]byte, []int64, err
 	return buf, offsets, nil
 }
 
-func (p *FilePersister) writeLog(start int64, buf []byte) error {
-	f, err := os.OpenFile(p.logPath, os.O_RDWR|os.O_CREATE, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if err := f.Truncate(start); err != nil {
-		return err
-	}
-
-	if _, err := f.WriteAt(buf, start); err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func (p *FilePersister) Sync() error {
-	f, err := os.OpenFile(p.logPath, os.O_RDWR, 0)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	return f.Sync()
+	return p.log.Sync()
 }
 
 func (p *FilePersister) Load() (*proto.PersistentState, error) {
@@ -208,7 +202,7 @@ func (p *FilePersister) Load() (*proto.PersistentState, error) {
 		return nil, err
 	}
 
-	if data == nil && !p.exists {
+	if data == nil && p.base == 0 && len(logs) == 0 {
 		return nil, nil
 	}
 
@@ -220,12 +214,6 @@ func (p *FilePersister) Load() (*proto.PersistentState, error) {
 
 func (p *FilePersister) readLog() ([]*proto.LogEntry, error) {
 	data, err := os.ReadFile(p.logPath)
-	if errors.Is(err, os.ErrNotExist) {
-		p.base, p.offsets, p.size = 0, nil, logHeader
-		p.indexed, p.exists = true, false
-		return nil, nil
-	}
-
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +274,6 @@ func (p *FilePersister) readLog() ([]*proto.LogEntry, error) {
 	}
 
 	p.base, p.offsets, p.size = binary.LittleEndian.Uint64(data), offsets, pos
-	p.indexed, p.exists = true, true
 
 	return logs, nil
 }

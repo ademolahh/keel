@@ -90,7 +90,12 @@ func newNode(t *testing.T, term uint64, entries int) *raft.Raft {
 		logs[i] = &proto.LogEntry{Term: term, Cmd: "set a=1"}
 	}
 
-	persister := raft.NewFilePersister(t.TempDir(), t.TempDir())
+	persister, err := raft.OpenFilePersister(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("open persister: %v", err)
+	}
+	t.Cleanup(func() { persister.Close() })
+
 	if err := persister.SaveState(term, nil); err != nil {
 		t.Fatalf("save state: %v", err)
 	}
