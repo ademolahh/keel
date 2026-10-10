@@ -87,6 +87,32 @@ Each node is configured through environment variables.
 - **Reads.** A new leader commits an empty entry for its term. A read records the commit index, confirms leadership through one heartbeat round shared with any concurrent reads, and waits until that index is applied. Reads do not write to the log.
 - **Snapshots.** Once more than `SNAPSHOT_THRESHOLD` bytes of applied log build up, the node snapshots the store and drops the entries it covers.
 
+## Benchmark
+
+A [k6](https://k6.io) run against the leader of the five-node Compose cluster. Each iteration writes a key, reads it back and checks that the value matches, so every iteration also checks that a read sees the write before it. Each virtual user writes its own key and tags its writes with a `client_id` and `seq`, so the retry check runs on every write.
+
+The arrival rate steps up from 1,000 to 2,000, 4,000, 6,000 and 8,000 iterations a second, holding each step for 20 seconds, then ramps down: 2 minutes 40 seconds in all. The run aborts if p95 latency goes over 100 ms or more than 1% of requests fail.
+
+| | |
+|---|---|
+| Requests | 1,264,629 (7,900 a second) |
+| Iterations (one set and one get) | 632,314 (3,950 a second) |
+| Failed requests | 0 |
+| Failed checks | 0 of 1,896,942 |
+| Latency p50 / p90 / p95 / p99 | 1.93 / 3.35 / 3.96 / 6.21 ms |
+| Latency max | 122 ms |
+| Dropped iterations | 185 |
+
+Neither threshold was crossed, so the run completed.
+
+**Caveats.**
+
+- Everything ran on one machine, so there is no real network latency between nodes, and k6 competes with the nodes for CPU.
+- fsync goes to Docker Desktop's virtual disk, which may not reach the physical disk the way it would on a dedicated host. Expect higher write latency on real hardware.
+- 3,950 iterations a second is the average over the whole ramp, not the peak. k6 dropped 185 iterations that could not start on schedule.
+- Requests went straight to the leader, so redirects from followers were not exercised.
+- No node failed during the run.
+
 ## Develop
 
 ```sh
