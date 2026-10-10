@@ -503,7 +503,7 @@ func TestAppendEntries(t *testing.T) {
 	t.Run("replies only after the new entries are synced", func(t *testing.T) {
 		gate := make(chan struct{})
 		persister := &slowPersister{memoryPersister: &memoryPersister{}}
-		raft, err := New(1, map[uint64]string{1: "localhost:0", 2: "localhost:0"}, &recorder{}, persister)
+		raft, err := New(1, dialPeers(t, 1, map[uint64]string{1: "localhost:0", 2: "localhost:0"}), &recorder{}, persister)
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}

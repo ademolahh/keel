@@ -283,7 +283,7 @@ func TestReadPersist(t *testing.T) {
 	t.Run("fails when the saved state cannot be loaded", func(t *testing.T) {
 		peers := map[uint64]string{1: "localhost:0"}
 
-		if _, err := New(1, peers, nil, failingPersister{}); err == nil {
+		if _, err := New(1, dialPeers(t, 1, peers), nil, failingPersister{}); err == nil {
 			t.Error("new: expected an error, got none")
 		}
 	})

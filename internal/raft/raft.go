@@ -10,9 +10,6 @@ import (
 	"time"
 
 	"github.com/ademolahh/keel/proto"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
-	"google.golang.org/grpc/credentials/insecure"
 	protobuf "google.golang.org/protobuf/proto"
 )
 
@@ -124,36 +121,12 @@ type peer struct {
 	client proto.RaftClient
 }
 
-func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, persister Persister, opts ...grpc.DialOption) (*Raft, error) {
-	var peers []peer
-
-	for pid, addr := range peerClient {
-		if pid == id {
-			continue
+func New(id uint64, clients map[uint64]proto.RaftClient, stateMachine StateMachine, persister Persister) (*Raft, error) {
+	peers := make([]peer, 0, len(clients))
+	for pid, client := range clients {
+		if pid != id {
+			peers = append(peers, peer{id: pid, client: client})
 		}
-
-		conn, err := grpc.NewClient("passthrough:///"+addr, append([]grpc.DialOption{
-			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithConnectParams(grpc.ConnectParams{
-				Backoff: backoff.Config{
-					BaseDelay:  50 * time.Millisecond,
-					Multiplier: 1.6,
-					Jitter:     0.2,
-					MaxDelay:   100 * time.Millisecond,
-				},
-			}),
-		}, opts...)...)
-
-		if err != nil {
-			slog.Error("dropping peer", "node", id, "peer", pid, "addr", addr, "err", err)
-			continue
-		}
-
-		slog.Debug("peer client created", "node", id, "peer", pid, "addr", addr)
-
-		client := proto.NewRaftClient(conn)
-
-		peers = append(peers, peer{id: pid, client: client})
 	}
 
 	r := &Raft{

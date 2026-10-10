@@ -104,7 +104,7 @@ func newNode(t *testing.T, term uint64, entries int) *raft.Raft {
 		t.Fatalf("save log: %v", err)
 	}
 
-	r, err := raft.New(1, map[uint64]string{1: "localhost:0"}, kv.NewKV(), persister)
+	r, err := raft.New(1, nil, kv.NewKV(), persister)
 	if err != nil {
 		t.Fatalf("raft: %v", err)
 	}

@@ -15,6 +15,8 @@ import (
 	"github.com/ademolahh/keel/internal/kv"
 	"github.com/ademolahh/keel/proto"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/credentials/insecure"
 	protobuf "google.golang.org/protobuf/proto"
 )
 
@@ -421,7 +423,7 @@ func TestAppend(t *testing.T) {
 	})
 
 	t.Run("reports a write as applied even when a snapshot compacts it first", func(t *testing.T) {
-		raft, err := New(1, map[uint64]string{1: "localhost:0"}, &recorder{}, &memoryPersister{})
+		raft, err := New(1, dialPeers(t, 1, map[uint64]string{1: "localhost:0"}), &recorder{}, &memoryPersister{})
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1378,7 +1380,7 @@ func TestStepDown(t *testing.T) {
 func TestRunSync(t *testing.T) {
 	t.Run("covers many writes with one sync", func(t *testing.T) {
 		persister := &slowPersister{memoryPersister: &memoryPersister{}, delay: 20 * time.Millisecond}
-		raft, err := New(1, map[uint64]string{1: "localhost:0"}, &recorder{}, persister)
+		raft, err := New(1, dialPeers(t, 1, map[uint64]string{1: "localhost:0"}), &recorder{}, persister)
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1688,7 +1690,7 @@ func TestPersist(t *testing.T) {
 		persister := openPersister(t, t.TempDir(), t.TempDir())
 		peers := map[uint64]string{1: "localhost:0", 2: "localhost:0"}
 
-		before, err := New(1, peers, &kv.KV{}, persister)
+		before, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, persister)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1700,7 +1702,7 @@ func TestPersist(t *testing.T) {
 		before.AppendEntries(context.Background(),
 			&proto.AppendEntriesRequest{Term: 3, LeaderId: 2, Entries: makeLogs()[:2]})
 
-		after, err := New(1, peers, &kv.KV{}, persister)
+		after, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, persister)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1725,7 +1727,7 @@ func TestRestart(t *testing.T) {
 	t.Run("loads the snapshot and the log after it", func(t *testing.T) {
 		dir := t.TempDir()
 
-		before, err := New(1, peers, &kv.KV{}, openPersister(t, dir, dir))
+		before, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1740,7 +1742,7 @@ func TestRestart(t *testing.T) {
 		})
 
 		sm := &recorder{}
-		after, err := New(1, peers, sm, openPersister(t, dir, dir))
+		after, err := New(1, dialPeers(t, 1, peers), sm, openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1780,7 +1782,7 @@ func TestRestart(t *testing.T) {
 		p.SaveLog(1, makeLogs())
 		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 2}))
 
-		raft, err := New(1, peers, &kv.KV{}, openPersister(t, dir, dir))
+		raft, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1798,7 +1800,7 @@ func TestRestart(t *testing.T) {
 		p.SaveLog(1, makeLogs())
 		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 3}))
 
-		raft, err := New(1, peers, &kv.KV{}, openPersister(t, dir, dir))
+		raft, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1812,7 +1814,7 @@ func TestRestart(t *testing.T) {
 		dir := t.TempDir()
 		openPersister(t, dir, dir).ResetLog(4, nil)
 
-		if _, err := New(1, peers, &kv.KV{}, openPersister(t, dir, dir)); err == nil {
+		if _, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, openPersister(t, dir, dir)); err == nil {
 			t.Error("new: expected an error, got none")
 		}
 	})
@@ -1976,6 +1978,31 @@ func manualLeader(r *Raft, term uint64) *Raft {
 	return r
 }
 
+func dialPeers(t *testing.T, id uint64, addrs map[uint64]string) map[uint64]proto.RaftClient {
+	t.Helper()
+
+	clients := make(map[uint64]proto.RaftClient, len(addrs))
+	for pid, addr := range addrs {
+		if pid == id {
+			continue
+		}
+
+		conn, err := grpc.NewClient("passthrough:///"+addr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithConnectParams(grpc.ConnectParams{
+				Backoff: backoff.Config{BaseDelay: 50 * time.Millisecond, Multiplier: 1.6, MaxDelay: 100 * time.Millisecond},
+			}))
+		if err != nil {
+			t.Fatalf("dial peer %d: %v", pid, err)
+		}
+		t.Cleanup(func() { conn.Close() })
+
+		clients[pid] = proto.NewRaftClient(conn)
+	}
+
+	return clients
+}
+
 func writeContext(t *testing.T) context.Context {
 	t.Helper()
 
@@ -2132,7 +2159,7 @@ func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
 		t.Fatalf("id %d is not in the cluster", id)
 	}
 
-	raft, err := New(id, peers, &kv.KV{}, &memoryPersister{})
+	raft, err := New(id, dialPeers(t, id, peers), &kv.KV{}, &memoryPersister{})
 	if err != nil {
 		t.Fatalf("raft initialization failed: %v", err)
 	}
@@ -2175,7 +2202,7 @@ func clusterWithOptions(t *testing.T, n int, serverOpts map[uint64][]grpc.Server
 	}
 
 	for id, lst := range listeners {
-		r, err := New(id, peers, &kv.KV{}, &memoryPersister{})
+		r, err := New(id, dialPeers(t, id, peers), &kv.KV{}, &memoryPersister{})
 		if err != nil {
 			t.Fatalf("raft initialization failed: %v", err)
 		}
