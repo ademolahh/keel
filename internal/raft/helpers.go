@@ -91,20 +91,20 @@ func (r *Raft) Leader() (uint64, bool) {
 	return r.leaderId, r.leaderId != 0
 }
 
-func (r *Raft) lastIndex() uint64 {
-	return r.lastIncludedIndex + uint64(len(r.logs))
+func (l *logState) lastIndex() uint64 {
+	return l.lastIncludedIndex + uint64(len(l.logs))
 }
 
-func (r *Raft) termAt(index uint64) uint64 {
-	if index == r.lastIncludedIndex {
-		return r.lastIncludedTerm
+func (l *logState) termAt(index uint64) uint64 {
+	if index == l.lastIncludedIndex {
+		return l.lastIncludedTerm
 	}
 
-	return r.logs[index-r.lastIncludedIndex-1].Term
+	return l.logs[index-l.lastIncludedIndex-1].Term
 }
 
-func (r *Raft) entriesFrom(index uint64) []*proto.LogEntry {
-	return r.logs[index-r.lastIncludedIndex-1:]
+func (l *logState) entriesFrom(index uint64) []*proto.LogEntry {
+	return l.logs[index-l.lastIncludedIndex-1:]
 }
 
 func (r *Raft) waitApplied(ctx context.Context, index uint64) error {
@@ -152,10 +152,10 @@ func (r *Raft) notifySync() {
 	}
 }
 
-func (r *Raft) markSynced(index uint64) {
-	r.syncedIndex = index
-	close(r.synced)
-	r.synced = make(chan struct{})
+func (l *logState) markSynced(index uint64) {
+	l.syncedIndex = index
+	close(l.synced)
+	l.synced = make(chan struct{})
 }
 
 func (r *Raft) advanceCommit() {

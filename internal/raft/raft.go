@@ -50,23 +50,9 @@ type Raft struct {
 	// persistent
 	currentTerm uint64
 	votedFor    *uint64
-	logs        []*proto.LogEntry
 
 	commitIndex uint64
 	lastApplied uint64
-
-	syncedIndex uint64
-	logGen      uint64
-
-	lastIncludedIndex uint64
-	lastIncludedTerm  uint64
-	snapshotChunks    []byte
-	pendingSnapshot   *proto.Snapshot
-	snapshot          *proto.Snapshot
-	snapshotThreshold int
-
-	nextIndex  map[uint64]uint64
-	matchIndex map[uint64]uint64
 
 	peers []peer
 	state RaftState
@@ -77,14 +63,45 @@ type Raft struct {
 	electionDeadline time.Time
 	voteTimeout      time.Duration
 
+	logState
+	snapshotState
+	leaderState
+
 	killOnce sync.Once
 	done     chan struct{}
 	mu       sync.Mutex
 
 	commitCh chan struct{}
 	applied  chan struct{}
-	syncCh   chan struct{}
-	synced   chan struct{}
+
+	stateMachine StateMachine
+	persister    Persister
+	log          *slog.Logger
+
+	proto.UnimplementedRaftServer
+}
+
+type logState struct {
+	logs              []*proto.LogEntry
+	lastIncludedIndex uint64
+	lastIncludedTerm  uint64
+
+	syncedIndex uint64
+	logGen      uint64
+	syncCh      chan struct{}
+	synced      chan struct{}
+}
+
+type snapshotState struct {
+	snapshot          *proto.Snapshot
+	pendingSnapshot   *proto.Snapshot
+	snapshotChunks    []byte
+	snapshotThreshold int
+}
+
+type leaderState struct {
+	nextIndex  map[uint64]uint64
+	matchIndex map[uint64]uint64
 
 	wake     map[uint64]chan struct{}
 	wakeTerm uint64
@@ -94,12 +111,6 @@ type Raft struct {
 	acked      chan struct{}
 
 	pending map[uint64]pendingAppend
-
-	stateMachine StateMachine
-	persister    Persister
-	log          *slog.Logger
-
-	proto.UnimplementedRaftServer
 }
 
 type pendingAppend struct {
@@ -145,26 +156,32 @@ func New(id uint64, peerClient map[uint64]string, stateMachine StateMachine, per
 	}
 
 	r := &Raft{
-		id:                id,
-		peers:             peers,
-		state:             Follower,
-		logs:              []*proto.LogEntry{},
-		voteTimeout:       5 * time.Second,
-		snapshotThreshold: DefaultSnapshotThreshold,
-		nextIndex:         make(map[uint64]uint64),
-		matchIndex:        make(map[uint64]uint64),
-		done:              make(chan struct{}),
-		commitCh:          make(chan struct{}, 1),
-		applied:           make(chan struct{}),
-		syncCh:            make(chan struct{}, 1),
-		synced:            make(chan struct{}),
-		ackedRound:        make(map[uint64]uint64),
-		pending:           make(map[uint64]pendingAppend),
-		acked:             make(chan struct{}),
-		stateMachine:      stateMachine,
-		persister:         persister,
-		log:               slog.Default().With("node", id),
-		electionDeadline:  time.Now().Add(randomElectionTimeout()),
+		id:          id,
+		peers:       peers,
+		state:       Follower,
+		voteTimeout: 5 * time.Second,
+		logState: logState{
+			logs:   []*proto.LogEntry{},
+			syncCh: make(chan struct{}, 1),
+			synced: make(chan struct{}),
+		},
+		snapshotState: snapshotState{
+			snapshotThreshold: DefaultSnapshotThreshold,
+		},
+		leaderState: leaderState{
+			nextIndex:  make(map[uint64]uint64),
+			matchIndex: make(map[uint64]uint64),
+			ackedRound: make(map[uint64]uint64),
+			acked:      make(chan struct{}),
+			pending:    make(map[uint64]pendingAppend),
+		},
+		done:             make(chan struct{}),
+		commitCh:         make(chan struct{}, 1),
+		applied:          make(chan struct{}),
+		stateMachine:     stateMachine,
+		persister:        persister,
+		log:              slog.Default().With("node", id),
+		electionDeadline: time.Now().Add(randomElectionTimeout()),
 	}
 
 	if err := r.readPersist(); err != nil {
