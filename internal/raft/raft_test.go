@@ -1718,7 +1718,7 @@ func TestPersist(t *testing.T) {
 		persister := openPersister(t, t.TempDir(), t.TempDir())
 		peers := map[uint64]string{1: "localhost:0", 2: "localhost:0"}
 
-		before, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, persister)
+		before, err := New(1, dialPeers(t, 1, peers), kv.NewKV(), persister)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1730,7 +1730,7 @@ func TestPersist(t *testing.T) {
 		before.AppendEntries(context.Background(),
 			&proto.AppendEntriesRequest{Term: 3, LeaderId: 2, Entries: makeLogs()[:2]})
 
-		after, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, persister)
+		after, err := New(1, dialPeers(t, 1, peers), kv.NewKV(), persister)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1755,7 +1755,7 @@ func TestRestart(t *testing.T) {
 	t.Run("loads the snapshot and the log after it", func(t *testing.T) {
 		dir := t.TempDir()
 
-		before, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, openPersister(t, dir, dir))
+		before, err := New(1, dialPeers(t, 1, peers), kv.NewKV(), openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1810,7 +1810,7 @@ func TestRestart(t *testing.T) {
 		p.SaveLog(1, makeLogs())
 		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 2}))
 
-		raft, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, openPersister(t, dir, dir))
+		raft, err := New(1, dialPeers(t, 1, peers), kv.NewKV(), openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1828,7 +1828,7 @@ func TestRestart(t *testing.T) {
 		p.SaveLog(1, makeLogs())
 		p.SaveSnapshot(snapshotBytes(t, &proto.Snapshot{LastIncludedIndex: 3, LastIncludedTerm: 3}))
 
-		raft, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, openPersister(t, dir, dir))
+		raft, err := New(1, dialPeers(t, 1, peers), kv.NewKV(), openPersister(t, dir, dir))
 		if err != nil {
 			t.Fatalf("new: %v", err)
 		}
@@ -1842,7 +1842,7 @@ func TestRestart(t *testing.T) {
 		dir := t.TempDir()
 		openPersister(t, dir, dir).ResetLog(4, nil)
 
-		if _, err := New(1, dialPeers(t, 1, peers), &kv.KV{}, openPersister(t, dir, dir)); err == nil {
+		if _, err := New(1, dialPeers(t, 1, peers), kv.NewKV(), openPersister(t, dir, dir)); err == nil {
 			t.Error("new: expected an error, got none")
 		}
 	})
@@ -1973,12 +1973,11 @@ func (s *recorder) Restore(data []byte) error {
 	return nil
 }
 
-func (s *recorder) Apply(cmd string) any {
+func (s *recorder) Apply(cmd string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.cmds = append(s.cmds, cmd)
-	return nil
 }
 
 func (s *recorder) Snapshot() ([]byte, error) {
@@ -2187,7 +2186,7 @@ func newRaft(t *testing.T, id uint64, n int) (*Raft, map[uint64]string) {
 		t.Fatalf("id %d is not in the cluster", id)
 	}
 
-	raft, err := New(id, dialPeers(t, id, peers), &kv.KV{}, &memoryPersister{})
+	raft, err := New(id, dialPeers(t, id, peers), kv.NewKV(), &memoryPersister{})
 	if err != nil {
 		t.Fatalf("raft initialization failed: %v", err)
 	}
@@ -2244,7 +2243,7 @@ func idleCluster(t *testing.T, n int, serverOpts map[uint64][]grpc.ServerOption)
 	}
 
 	for id, lst := range listeners {
-		r, err := New(id, dialPeers(t, id, peers), &kv.KV{}, &memoryPersister{})
+		r, err := New(id, dialPeers(t, id, peers), kv.NewKV(), &memoryPersister{})
 		if err != nil {
 			t.Fatalf("raft initialization failed: %v", err)
 		}

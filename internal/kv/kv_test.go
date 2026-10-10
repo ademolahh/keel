@@ -12,7 +12,7 @@ func TestSet(t *testing.T) {
 	t.Run("stores the value under the key", func(t *testing.T) {
 		kv := NewKV()
 
-		kv.set("a", "1")
+		kv.Apply(command(t, "set", "a", "1"))
 
 		if value := kv.Data["a"]; value != "1" {
 			t.Errorf("value: expected 1, got %q", value)
@@ -23,7 +23,7 @@ func TestSet(t *testing.T) {
 func TestGet(t *testing.T) {
 	t.Run("returns the value of a stored key", func(t *testing.T) {
 		kv := NewKV()
-		kv.set("a", "1")
+		kv.Apply(command(t, "set", "a", "1"))
 
 		if value, ok := kv.Get("a"); !ok || value != "1" {
 			t.Errorf("value: expected 1, got %q (found %t)", value, ok)
@@ -43,9 +43,7 @@ func TestApply(t *testing.T) {
 	t.Run("sets a key", func(t *testing.T) {
 		kv := NewKV()
 
-		if res := kv.Apply(command(t, "set", "a", "1")); res != nil {
-			t.Fatalf("apply: expected nil, got %v", res)
-		}
+		kv.Apply(command(t, "set", "a", "1"))
 
 		if value, ok := kv.Get("a"); !ok || value != "1" {
 			t.Errorf("value: expected 1, got %q (found %t)", value, ok)
@@ -56,9 +54,7 @@ func TestApply(t *testing.T) {
 		kv := NewKV()
 		kv.Apply(command(t, "set", "a", "1"))
 
-		if res := kv.Apply(command(t, "delete", "a", "")); res != nil {
-			t.Fatalf("apply: expected nil, got %v", res)
-		}
+		kv.Apply(command(t, "delete", "a", ""))
 
 		if value, ok := kv.Get("a"); ok {
 			t.Errorf("value: expected none, got %q", value)
@@ -68,9 +64,7 @@ func TestApply(t *testing.T) {
 	t.Run("ignores deleting a missing key", func(t *testing.T) {
 		kv := NewKV()
 
-		if res := kv.Apply(command(t, "delete", "a", "")); res != nil {
-			t.Fatalf("apply: expected nil, got %v", res)
-		}
+		kv.Apply(command(t, "delete", "a", ""))
 
 		if len(kv.Data) != 0 {
 			t.Errorf("size: expected 0, got %d", len(kv.Data))
@@ -81,20 +75,20 @@ func TestApply(t *testing.T) {
 		kv := NewKV()
 		kv.Apply(command(t, "set", "a", "1"))
 
-		if res := kv.Apply(command(t, "rename", "a", "2")); res != nil {
-			t.Fatalf("apply: expected nil, got %v", res)
-		}
+		kv.Apply(command(t, "rename", "a", "2"))
 
 		if value, _ := kv.Get("a"); value != "1" {
 			t.Errorf("value: expected 1, got %q", value)
 		}
 	})
 
-	t.Run("returns an error for malformed json", func(t *testing.T) {
+	t.Run("ignores malformed json", func(t *testing.T) {
 		kv := NewKV()
+		kv.Apply(command(t, "set", "a", "1"))
+		kv.Apply("{")
 
-		if _, ok := kv.Apply("{").(error); !ok {
-			t.Error("apply: expected an error, got none")
+		if value, _ := kv.Get("a"); value != "1" || len(kv.Data) != 1 {
+			t.Errorf("data: expected only a=1, got %v", kv.Data)
 		}
 	})
 }

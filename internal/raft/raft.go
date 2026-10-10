@@ -23,7 +23,7 @@ const (
 )
 
 type StateMachine interface {
-	Apply(cmd string) any
+	Apply(cmd string)
 	Snapshot() ([]byte, error)
 	Restore(data []byte) error
 }
