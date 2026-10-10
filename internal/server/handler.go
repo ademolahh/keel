@@ -6,6 +6,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"time"
 
 	"github.com/ademolahh/keel/internal/kv"
@@ -184,6 +186,8 @@ func (h *RaftHandler) Readyz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok\n"))
 }
 
+const forwardedHeader = "X-Keel-Forwarded"
+
 func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if h.raft.IsLeader() {
@@ -193,15 +197,24 @@ func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
 
 		id, ok := h.raft.Leader()
 		addr, known := h.peers[id]
-		if !ok || !known {
-			slog.Debug("no leader to redirect to", "path", r.URL.Path)
+		if !ok || !known || r.Header.Get(forwardedHeader) != "" {
+			slog.Debug("no leader to forward to", "path", r.URL.Path)
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "no leader elected yet", http.StatusServiceUnavailable)
 			return
 		}
 
-		slog.Debug("redirecting to leader", "leader", id, "path", r.URL.Path)
-		http.Redirect(w, r, "http://"+addr+r.URL.RequestURI(), http.StatusTemporaryRedirect)
+		slog.Debug("forwarding to leader", "leader", id, "path", r.URL.Path)
+
+		proxy := httputil.NewSingleHostReverseProxy(&url.URL{Scheme: "http", Host: addr})
+		proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+			slog.Debug("leader unreachable", "leader", id, "err", err)
+			w.Header().Set("Retry-After", "1")
+			http.Error(w, "leader unreachable", http.StatusServiceUnavailable)
+		}
+
+		r.Header.Set(forwardedHeader, "1")
+		proxy.ServeHTTP(w, r)
 	}
 }
 

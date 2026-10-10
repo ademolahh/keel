@@ -13,14 +13,7 @@ A key-value store replicated with Raft, written in Go. Nodes talk to each other 
 docker compose up --build
 ```
 
-This starts five nodes. Their HTTP APIs are on `localhost:8081` to `localhost:8085`, one per node.
-
-Reads and writes must reach the leader. A follower redirects them there with `307`, but the redirect points at a Docker hostname such as `raft-2:8080`, which only resolves inside the Compose network. From your machine, ask any node who the leader is and send requests to that node's port:
-
-```sh
-curl localhost:8081/leader
-# {"id":3,"address":"raft-3:8080"}   ->   use localhost:8083
-```
+This starts five nodes. Their HTTP APIs are on `localhost:8081` to `localhost:8085`, one per node. Any of them works: reads and writes are handled by the leader, and a follower forwards them there.
 
 ## API
 
@@ -31,8 +24,8 @@ curl localhost:8081/leader
 | `GET` | `/get` | `?key=a` | `200` with `{"key": "a", "value": "1"}`, or `404` |
 
 ```sh
-curl -X POST -d '{"key":"a","value":"1"}' localhost:8083/set
-curl localhost:8083/get?key=a
+curl -X POST -d '{"key":"a","value":"1"}' localhost:8081/set
+curl localhost:8081/get?key=a
 ```
 
 A `503` means the request could not be completed right now. A response that carries `Retry-After` changed nothing, so it is safe to retry after that many seconds: no leader is known, the node is not the leader, or a read could not confirm leadership with a majority. A write that was not applied within two seconds, or whose leader stepped down while it waited, comes back without `Retry-After`, because it may still apply; retry it with a `client_id` and `seq` (below) so it cannot apply twice.
@@ -42,7 +35,7 @@ A `503` means the request could not be completed right now. A response that carr
 A write that times out may still have been applied. To retry without applying it twice, give each write a `client_id` and a `seq` that starts at 1 and goes up by one with each new write from that client. A write whose `seq` is not above the last one applied for its `client_id` is skipped.
 
 ```sh
-curl -X POST -d '{"key":"a","value":"1","client_id":"c1","seq":1}' localhost:8083/set
+curl -X POST -d '{"key":"a","value":"1","client_id":"c1","seq":1}' localhost:8081/set
 ```
 
 ### Operations
@@ -107,7 +100,7 @@ Neither threshold was crossed, so the run completed.
 - Everything ran on one machine, so there is no real network latency between nodes, and k6 competes with the nodes for CPU.
 - fsync goes to Docker Desktop's virtual disk, which may not reach the physical disk the way it would on a dedicated host. Expect higher write latency on real hardware.
 - 3,950 iterations a second is the average over the whole ramp, not the peak. k6 dropped 185 iterations that could not start on schedule.
-- Requests went straight to the leader, so redirects from followers were not exercised.
+- Requests went straight to the leader, so requests passing through a follower were not exercised.
 - No node failed during the run.
 
 ## Develop
