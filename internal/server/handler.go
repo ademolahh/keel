@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -44,9 +45,7 @@ func (h *RaftHandler) Set(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.raft.Append(string(data)) {
-		slog.Warn("write not committed", "op", "set", "key", cmd.Key)
-		http.Error(w, "set was not committed", http.StatusServiceUnavailable)
+	if !h.commit(w, r, "set", cmd.Key, string(data)) {
 		return
 	}
 
@@ -74,13 +73,34 @@ func (h *RaftHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.raft.Append(string(data)) {
-		slog.Warn("write not committed", "op", "delete", "key", cmd.Key)
-		http.Error(w, "delete was not committed", http.StatusServiceUnavailable)
+	if !h.commit(w, r, "delete", cmd.Key, string(data)) {
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *RaftHandler) commit(w http.ResponseWriter, r *http.Request, op, key, cmd string) bool {
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+
+	err := h.raft.Append(ctx, cmd)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, raft.ErrNotLeader):
+		w.Header().Set("Retry-After", "1")
+		http.Error(w, "not the leader", http.StatusServiceUnavailable)
+	case errors.Is(err, raft.ErrTimeout):
+		http.Error(w, op+" was not applied in time and may still apply", http.StatusServiceUnavailable)
+	case errors.Is(err, raft.ErrLost):
+		http.Error(w, "leadership changed, so "+op+" may or may not have applied", http.StatusServiceUnavailable)
+	default:
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+
+	slog.Warn("write not applied", "op", op, "key", key, "err", err)
+	return false
 }
 
 func (h *RaftHandler) Get(w http.ResponseWriter, r *http.Request) {

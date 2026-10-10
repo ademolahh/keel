@@ -264,7 +264,7 @@ func TestAppend(t *testing.T) {
 		r.startReplicators()
 		logSize := len(r.logs)
 
-		r.Append("set a=1")
+		r.Append(writeContext(t), "set a=1")
 
 		if len(r.logs) != logSize+1 {
 			t.Errorf("log size: expected %d, got %d", logSize+1, len(r.logs))
@@ -281,7 +281,7 @@ func TestAppend(t *testing.T) {
 		r.startReplicators()
 		size := len(nodes)
 
-		res := r.Append("set a = 1")
+		res := r.Append(writeContext(t), "set a = 1") == nil
 
 		if !res {
 			t.Errorf("entry failed to commit")
@@ -332,7 +332,7 @@ func TestAppend(t *testing.T) {
 		nodes[DEFAULT_LEADER_ID].raft.initMatchIndex()
 		nodes[DEFAULT_LEADER_ID].raft.startReplicators()
 
-		res := nodes[DEFAULT_LEADER_ID].raft.Append("set a=1")
+		res := nodes[DEFAULT_LEADER_ID].raft.Append(writeContext(t), "set a=1") == nil
 		if !res {
 			t.Fatal("append failed")
 		}
@@ -361,7 +361,7 @@ func TestAppend(t *testing.T) {
 		nodes[4].stop()
 		nodes[5].stop()
 
-		if r.Append("set a=1") {
+		if r.Append(writeContext(t), "set a=1") == nil {
 			t.Error("append: expected false, got true")
 		}
 	})
@@ -387,7 +387,7 @@ func TestAppend(t *testing.T) {
 			return true
 		})
 
-		if !raft.Append("set a=1") {
+		if raft.Append(writeContext(t), "set a=1") != nil {
 			t.Error("append: expected true, got false")
 		}
 	})
@@ -415,7 +415,7 @@ func TestAppend(t *testing.T) {
 			return true
 		})
 
-		if raft.Append("set a=1") {
+		if raft.Append(writeContext(t), "set a=1") == nil {
 			t.Error("append: expected false, got true")
 		}
 	})
@@ -439,7 +439,7 @@ func TestAppend(t *testing.T) {
 		failed := make(chan int, writes)
 		for i := range writes {
 			wg.Go(func() {
-				if !raft.Append(fmt.Sprintf("set k=%d", i)) {
+				if raft.Append(writeContext(t), fmt.Sprintf("set k=%d", i)) != nil {
 					failed <- i
 				}
 			})
@@ -452,10 +452,45 @@ func TestAppend(t *testing.T) {
 		}
 	})
 
+	t.Run("reports why a write was not applied", func(t *testing.T) {
+		follower, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		if err := follower.Append(writeContext(t), "set a=1"); !errors.Is(err, ErrNotLeader) {
+			t.Errorf("on a follower: expected %v, got %v", ErrNotLeader, err)
+		}
+
+		nodes, _ := cluster(t, 3, nil)
+		nodes[2].stop()
+		nodes[3].stop()
+		leader := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		if err := leader.Append(ctx, "set a=1"); !errors.Is(err, ErrTimeout) {
+			t.Errorf("without a majority: expected %v, got %v", ErrTimeout, err)
+		}
+
+		result := make(chan error, 1)
+		go func() { result <- leader.Append(writeContext(t), "set b=2") }()
+
+		waitFor(t, time.Second, func() bool {
+			leader.mu.Lock()
+			defer leader.mu.Unlock()
+
+			return len(leader.pending) == 1
+		})
+
+		leader.RequestVote(context.Background(), &proto.RequestVoteRequest{Term: 5, CandidateId: 2})
+
+		if err := <-result; !errors.Is(err, ErrLost) {
+			t.Errorf("after stepping down: expected %v, got %v", ErrLost, err)
+		}
+	})
+
 	t.Run("refuses a command when it is not the leader", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 
-		if raft.Append("set a=1") {
+		if raft.Append(writeContext(t), "set a=1") == nil {
 			t.Error("append: expected false, got true")
 		}
 
@@ -477,7 +512,7 @@ func TestAppend(t *testing.T) {
 		r.startReplicators()
 		r.mu.Unlock()
 
-		if !r.Append("set a=1") {
+		if r.Append(writeContext(t), "set a=1") != nil {
 			t.Fatal("append: expected true, got false")
 		}
 
@@ -496,9 +531,9 @@ func TestRead(t *testing.T) {
 		}
 	})
 
-	t.Run("commits an empty entry when it has none from its term", func(t *testing.T) {
+	t.Run("waits for the empty entry a new leader commits", func(t *testing.T) {
 		nodes, _ := cluster(t, 3, nil)
-		r := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
+		r := electLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
 
 		if err := r.Read(readContext(t)); err != nil {
 			t.Fatalf("read: unexpected error: %v", err)
@@ -514,7 +549,7 @@ func TestRead(t *testing.T) {
 
 	t.Run("adds nothing to the log once it has committed in its term", func(t *testing.T) {
 		nodes, _ := cluster(t, 3, nil)
-		r := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
+		r := electLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
 
 		for range 3 {
 			if err := r.Read(readContext(t)); err != nil {
@@ -536,7 +571,7 @@ func TestRead(t *testing.T) {
 			2: {calls.interceptor(20 * time.Millisecond)},
 			3: {calls.interceptor(20 * time.Millisecond)},
 		})
-		r := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
+		r := electLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
 
 		if err := r.Read(readContext(t)); err != nil {
 			t.Fatalf("first read: unexpected error: %v", err)
@@ -1207,7 +1242,7 @@ func TestSendSnapshot(t *testing.T) {
 		r.startReplicators()
 		r.mu.Unlock()
 
-		if !r.Append("set f=6") {
+		if r.Append(writeContext(t), "set f=6") != nil {
 			t.Fatal("append: expected true, got false")
 		}
 
@@ -1246,7 +1281,7 @@ func TestStepDown(t *testing.T) {
 		r := manualLeader(nodes[DEFAULT_LEADER_ID].raft, 1)
 
 		result := make(chan bool, 1)
-		go func() { result <- r.Append("set a=1") }()
+		go func() { result <- r.Append(writeContext(t), "set a=1") == nil }()
 
 		waitFor(t, time.Second, func() bool {
 			r.mu.Lock()
@@ -1360,7 +1395,7 @@ func TestRunSync(t *testing.T) {
 		var wg sync.WaitGroup
 		for i := range writes {
 			wg.Go(func() {
-				if !raft.Append(fmt.Sprintf("set k=%d", i)) {
+				if raft.Append(writeContext(t), fmt.Sprintf("set k=%d", i)) != nil {
 					t.Errorf("append %d: expected true, got false", i)
 				}
 			})
@@ -1435,7 +1470,7 @@ func TestReplicators(t *testing.T) {
 		var wg sync.WaitGroup
 		for i := range writes {
 			wg.Go(func() {
-				if !r.Append(fmt.Sprintf("set k=%d", i)) {
+				if r.Append(writeContext(t), fmt.Sprintf("set k=%d", i)) != nil {
 					t.Errorf("append %d: expected true, got false", i)
 				}
 			})
@@ -1907,6 +1942,25 @@ func manualLeader(r *Raft, term uint64) *Raft {
 	r.initNextIndex()
 	r.initMatchIndex()
 	r.startReplicators()
+
+	return r
+}
+
+func writeContext(t *testing.T) context.Context {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	t.Cleanup(cancel)
+
+	return ctx
+}
+
+func electLeader(r *Raft, term uint64) *Raft {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.currentTerm = term
+	r.becomeLeader()
 
 	return r
 }

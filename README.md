@@ -35,7 +35,7 @@ curl -X POST -d '{"key":"a","value":"1"}' localhost:8083/set
 curl localhost:8083/get?key=a
 ```
 
-A `503` means the request could not be completed right now: no leader is known, the write did not commit within two seconds, or the leader could not confirm with a majority that it is still leader. Responses that carry `Retry-After` are safe to retry after that many seconds.
+A `503` means the request could not be completed right now. A response that carries `Retry-After` changed nothing, so it is safe to retry after that many seconds: no leader is known, the node is not the leader, or a read could not confirm leadership with a majority. A write that was not applied within two seconds, or whose leader stepped down while it waited, comes back without `Retry-After`, because it may still apply; retry it with a `client_id` and `seq` (below) so it cannot apply twice.
 
 ### Retrying writes
 

@@ -364,13 +364,15 @@ func (r *Raft) stopReplicators() {
 var (
 	ErrNotLeader = errors.New("not the leader")
 	ErrNoQuorum  = errors.New("could not reach a majority")
+	ErrTimeout   = errors.New("not applied before the deadline")
+	ErrLost      = errors.New("leadership changed before the entry was applied")
 )
 
-func (r *Raft) Append(cmd string) bool {
+func (r *Raft) Append(ctx context.Context, cmd string) error {
 	r.mu.Lock()
 	if r.state != Leader {
 		r.mu.Unlock()
-		return false
+		return ErrNotLeader
 	}
 
 	term := r.currentTerm
@@ -383,20 +385,21 @@ func (r *Raft) Append(cmd string) bool {
 	r.wakeReplicators()
 	r.mu.Unlock()
 
-	timeout := time.NewTimer(2 * time.Second)
-	defer timeout.Stop()
-
 	select {
 	case ours := <-done:
-		return ours
-	case <-timeout.C:
+		if !ours {
+			return ErrLost
+		}
+
+		return nil
+	case <-ctx.Done():
 		r.mu.Lock()
 		if p, ok := r.pending[index]; ok && p.done == done {
 			delete(r.pending, index)
 		}
 		r.mu.Unlock()
 
-		return false
+		return ErrTimeout
 	}
 }
 
@@ -407,10 +410,13 @@ func (r *Raft) Read(ctx context.Context) error {
 		return ErrNotLeader
 	}
 
-	ownCommit := r.commitIndex > r.lastIncludedIndex && r.termAt(r.commitIndex) == r.currentTerm
+	term := r.currentTerm
 	r.mu.Unlock()
 
-	if !ownCommit && !r.Append("") {
+	err := r.waitUntil(ctx, &r.applied, func() bool {
+		return r.state != Leader || r.currentTerm != term || r.termAt(r.commitIndex) == term
+	})
+	if err != nil {
 		return ErrNoQuorum
 	}
 
@@ -420,7 +426,6 @@ func (r *Raft) Read(ctx context.Context) error {
 		return ErrNotLeader
 	}
 
-	term := r.currentTerm
 	readIndex := r.commitIndex
 	r.readRound++
 	round := r.readRound
