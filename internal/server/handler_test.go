@@ -52,6 +52,42 @@ func TestLeaderOnly(t *testing.T) {
 	})
 }
 
+func TestWrite(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"rejects a body that is not JSON", `{`},
+		{"rejects a client_id without a seq", `{"key":"a","value":"1","client_id":"c1"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := followerOf(t, 2, "127.0.0.1:1")
+
+			for _, write := range []http.HandlerFunc{h.Set, h.Delete} {
+				res := httptest.NewRecorder()
+				write(res, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(tc.body)))
+
+				if res.Code != http.StatusBadRequest {
+					t.Errorf("status: expected 400, got %d", res.Code)
+				}
+			}
+		})
+	}
+
+	t.Run("answers a follower's write with 503 and Retry-After", func(t *testing.T) {
+		h := followerOf(t, 2, "127.0.0.1:1")
+
+		res := httptest.NewRecorder()
+		h.Delete(res, httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"key":"a"}`)))
+
+		if res.Code != http.StatusServiceUnavailable || res.Header().Get("Retry-After") == "" {
+			t.Errorf("expected 503 with Retry-After, got %d %v", res.Code, res.Header())
+		}
+	})
+}
+
 func followerOf(t *testing.T, leaderID uint64, leaderAddr string) *RaftHandler {
 	t.Helper()
 

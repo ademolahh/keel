@@ -27,34 +27,14 @@ func New(raft *raft.Raft, store *kv.KV, peers map[uint64]string) *RaftHandler {
 }
 
 func (h *RaftHandler) Set(w http.ResponseWriter, r *http.Request) {
-	var cmd kv.Cmd
-
-	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-
-	if cmd.ClientID != "" && cmd.Seq == 0 {
-		http.Error(w, "seq must be 1 or more when client_id is set", http.StatusBadRequest)
-		return
-	}
-
-	cmd.Op = "set"
-
-	data, err := json.Marshal(cmd)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-
-	if !h.commit(w, r, "set", cmd.Key, string(data)) {
-		return
-	}
-
-	w.WriteHeader(http.StatusCreated)
+	h.write(w, r, "set", http.StatusCreated)
 }
 
 func (h *RaftHandler) Delete(w http.ResponseWriter, r *http.Request) {
+	h.write(w, r, "delete", http.StatusNoContent)
+}
+
+func (h *RaftHandler) write(w http.ResponseWriter, r *http.Request, op string, status int) {
 	var cmd kv.Cmd
 
 	if err := json.NewDecoder(r.Body).Decode(&cmd); err != nil {
@@ -67,7 +47,7 @@ func (h *RaftHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cmd.Op = "delete"
+	cmd.Op = op
 
 	data, err := json.Marshal(cmd)
 	if err != nil {
@@ -75,11 +55,11 @@ func (h *RaftHandler) Delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.commit(w, r, "delete", cmd.Key, string(data)) {
+	if !h.commit(w, r, op, cmd.Key, string(data)) {
 		return
 	}
 
-	w.WriteHeader(http.StatusNoContent)
+	w.WriteHeader(status)
 }
 
 func (h *RaftHandler) commit(w http.ResponseWriter, r *http.Request, op, key, cmd string) bool {
