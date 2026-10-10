@@ -2,6 +2,8 @@ package server
 
 import (
 	"fmt"
+	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -16,23 +18,111 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func newRaft(id uint64, sm raft.StateMachine, m *metrics.RaftCollector) (*raft.Raft, error) {
-	peers, err := parsePeers(os.Getenv("PEERS"))
+type Peer struct {
+	RaftAddr string
+	HTTPAddr string
+}
+
+type Config struct {
+	ID                uint64
+	Peers             map[uint64]Peer
+	DataDir           string
+	LogLevel          slog.Level
+	SnapshotThreshold int
+}
+
+func LoadConfig() (Config, error) {
+	cfg := Config{
+		DataDir:           os.Getenv("DATA_DIR"),
+		LogLevel:          slog.LevelInfo,
+		SnapshotThreshold: raft.DefaultSnapshotThreshold,
+	}
+
+	id, err := strconv.ParseUint(os.Getenv("ID"), 10, 64)
 	if err != nil {
-		return nil, err
+		return Config{}, fmt.Errorf("ID: %w", err)
+	}
+	cfg.ID = id
+
+	if cfg.Peers, err = parsePeers(os.Getenv("PEERS")); err != nil {
+		return Config{}, fmt.Errorf("PEERS: %w", err)
 	}
 
-	if _, ok := peers[id]; !ok {
-		return nil, fmt.Errorf("id %d is not in PEERS", id)
+	if _, ok := cfg.Peers[id]; !ok {
+		return Config{}, fmt.Errorf("PEERS: no entry for ID %d", id)
 	}
 
-	dir := os.Getenv("DATA_DIR")
-	if dir == "" {
-		dir = "."
+	if cfg.DataDir == "" {
+		cfg.DataDir = "."
 	}
 
-	persistDir := filepath.Join(dir, "persist")
-	snapshotDir := filepath.Join(dir, "snapshot")
+	if v := os.Getenv("LOG_LEVEL"); v != "" {
+		if err := cfg.LogLevel.UnmarshalText([]byte(v)); err != nil {
+			return Config{}, fmt.Errorf("LOG_LEVEL: %w", err)
+		}
+	}
+
+	if v := os.Getenv("SNAPSHOT_THRESHOLD"); v != "" {
+		bytes, err := strconv.Atoi(v)
+		if err != nil || bytes <= 0 {
+			return Config{}, fmt.Errorf("SNAPSHOT_THRESHOLD: want a positive number of bytes, got %q", v)
+		}
+		cfg.SnapshotThreshold = bytes
+	}
+
+	return cfg, nil
+}
+
+func (c Config) Self() Peer {
+	return c.Peers[c.ID]
+}
+
+func (c Config) addrs(pick func(Peer) string) map[uint64]string {
+	addrs := make(map[uint64]string, len(c.Peers))
+	for id, p := range c.Peers {
+		addrs[id] = pick(p)
+	}
+
+	return addrs
+}
+
+func parsePeers(s string) (map[uint64]Peer, error) {
+	peers := make(map[uint64]Peer)
+
+	for entry := range strings.SplitSeq(s, ",") {
+		idStr, addrs, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("%q: want id=host:raft-port:http-port", entry)
+		}
+
+		id, err := strconv.ParseUint(idStr, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", entry, err)
+		}
+
+		cut := strings.LastIndex(addrs, ":")
+		host, raftPort, ok := strings.Cut(addrs[:max(cut, 0)], ":")
+		if cut < 0 || !ok || !isPort(raftPort) || !isPort(addrs[cut+1:]) {
+			return nil, fmt.Errorf("%q: want id=host:raft-port:http-port", entry)
+		}
+
+		peers[id] = Peer{
+			RaftAddr: net.JoinHostPort(host, raftPort),
+			HTTPAddr: net.JoinHostPort(host, addrs[cut+1:]),
+		}
+	}
+
+	return peers, nil
+}
+
+func isPort(s string) bool {
+	n, err := strconv.ParseUint(s, 10, 16)
+	return err == nil && n > 0
+}
+
+func newRaft(cfg Config, sm raft.StateMachine, m *metrics.RaftCollector) (*raft.Raft, error) {
+	persistDir := filepath.Join(cfg.DataDir, "persist")
+	snapshotDir := filepath.Join(cfg.DataDir, "snapshot")
 
 	for _, d := range []string{persistDir, snapshotDir} {
 		if err := os.MkdirAll(d, 0o700); err != nil {
@@ -45,48 +135,20 @@ func newRaft(id uint64, sm raft.StateMachine, m *metrics.RaftCollector) (*raft.R
 		return nil, err
 	}
 
-	persister := m.Persister(files)
-
-	clients, err := dialPeers(id, peers, grpc.WithChainUnaryInterceptor(m.Interceptor()))
+	raftAddrs := cfg.addrs(func(p Peer) string { return p.RaftAddr })
+	clients, err := dialPeers(cfg.ID, raftAddrs, grpc.WithChainUnaryInterceptor(m.Interceptor()))
 	if err != nil {
 		return nil, err
 	}
 
-	r, err := raft.New(id, clients, sm, persister)
+	r, err := raft.New(cfg.ID, clients, sm, m.Persister(files))
 	if err != nil {
 		return nil, err
 	}
 
-	if v := os.Getenv("SNAPSHOT_THRESHOLD"); v != "" {
-		bytes, err := strconv.Atoi(v)
-		if err != nil || bytes <= 0 {
-			return nil, fmt.Errorf("SNAPSHOT_THRESHOLD: want a positive number of bytes, got %q", v)
-		}
-
-		r.SetSnapshotThreshold(bytes)
-	}
+	r.SetSnapshotThreshold(cfg.SnapshotThreshold)
 
 	return r, nil
-}
-
-func parsePeers(s string) (map[uint64]string, error) {
-	peers := make(map[uint64]string)
-
-	for pair := range strings.SplitSeq(s, ",") {
-		idStr, addr, ok := strings.Cut(pair, "=")
-		if !ok {
-			return nil, fmt.Errorf("peer %q: expected id=address", pair)
-		}
-
-		id, err := strconv.ParseUint(idStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("peer %q: %w", pair, err)
-		}
-
-		peers[id] = addr
-	}
-
-	return peers, nil
 }
 
 func dialPeers(id uint64, addrs map[uint64]string, opts ...grpc.DialOption) (map[uint64]proto.RaftClient, error) {

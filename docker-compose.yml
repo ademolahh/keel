@@ -9,13 +9,10 @@ x-raft: &raft
     start_period: 5s
 
 x-env: &env
-  PORT: "7000"
-  HTTP_PORT: ":8080"
   DATA_DIR: "/data"
   LOG_LEVEL: "${LOG_LEVEL:-info}"
   SNAPSHOT_THRESHOLD: "${SNAPSHOT_THRESHOLD:-4194304}"
-  PEERS: "1=raft-1:7000,2=raft-2:7000,3=raft-3:7000,4=raft-4:7000,5=raft-5:7000"
-  HTTP_PEERS: "1=raft-1:8080,2=raft-2:8080,3=raft-3:8080,4=raft-4:8080,5=raft-5:8080"
+  PEERS: "1=raft-1:7000:8080,2=raft-2:7000:8080,3=raft-3:7000:8080,4=raft-4:7000:8080,5=raft-5:7000:8080"
 
 services:
   raft-1:

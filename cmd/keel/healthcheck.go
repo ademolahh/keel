@@ -6,12 +6,14 @@ import (
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/ademolahh/keel/internal/server"
 )
 
-func healthcheck(path string) int {
-	_, port, err := net.SplitHostPort(os.Getenv("HTTP_PORT"))
+func healthcheck(cfg server.Config, path string) int {
+	_, port, err := net.SplitHostPort(cfg.Self().HTTPAddr)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "HTTP_PORT: %v\n", err)
+		fmt.Fprintf(os.Stderr, "PEERS: %v\n", err)
 		return 1
 	}
 

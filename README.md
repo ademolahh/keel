@@ -64,12 +64,9 @@ Each node is configured through environment variables.
 | Variable | Example | Meaning |
 |---|---|---|
 | `ID` | `1` | This node's ID. It must appear in `PEERS`. |
-| `PEERS` | `1=raft-1:7000,2=raft-2:7000` | Every node's gRPC address, this one included. |
-| `HTTP_PEERS` | `1=raft-1:8080,2=raft-2:8080` | Every node's HTTP address, used for redirects to the leader. |
-| `PORT` | `7000` | The gRPC port to listen on. |
-| `HTTP_PORT` | `:8080` | The HTTP address to listen on. |
+| `PEERS` | `1=raft-1:7000:8080,2=raft-2:7000:8080` | Every node as `id=host:raft-port:http-port`, this one included. A node listens on the two ports in its own entry. |
 | `DATA_DIR` | `/data` | Where state is stored. Defaults to the working directory. |
-| `SNAPSHOT_THRESHOLD` | `4194304` | Bytes of applied log to keep before taking a snapshot. Defaults to 4 MB. |
+| `SNAPSHOT_THRESHOLD` | `4194304` | Bytes of log to keep before taking a snapshot. Defaults to 4 MB. |
 | `LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error`. Defaults to `info`. |
 
 ## Storage

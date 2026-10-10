@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"syscall"
 	"time"
 
@@ -19,40 +18,33 @@ import (
 	"google.golang.org/grpc"
 )
 
-func Serve() error {
+func Serve(cfg Config) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 	defer stop()
 
-	id, err := strconv.ParseUint(os.Getenv("ID"), 10, 64)
-	if err != nil {
-		return err
-	}
-
-	httpPeers, err := parsePeers(os.Getenv("HTTP_PEERS"))
-	if err != nil {
-		return err
-	}
+	id := cfg.ID
 
 	kv := kv.NewKV()
 	m := metrics.New()
-	raft, err := newRaft(id, kv, m)
+	raft, err := newRaft(cfg, kv, m)
 	if err != nil {
 		return err
 	}
 	m.SetRaft(raft)
 
-	grpcPort := os.Getenv("PORT")
-	grpcServer, err := startGRPC(grpcPort, raft)
+	grpcAddr := ":" + port(cfg.Self().RaftAddr)
+	grpcServer, err := startGRPC(grpcAddr, raft)
 	if err != nil {
 		return err
 	}
 
 	raft.Start()
 
-	httpPort := os.Getenv("HTTP_PORT")
-	httpServer, httpErr := startHTTP(httpPort, New(raft, kv, httpPeers), m)
+	httpAddr := ":" + port(cfg.Self().HTTPAddr)
+	httpPeers := cfg.addrs(func(p Peer) string { return p.HTTPAddr })
+	httpServer, httpErr := startHTTP(httpAddr, New(raft, kv, httpPeers), m)
 
-	slog.Info("serving", "node", id, "grpc_port", grpcPort, "http_addr", httpPort)
+	slog.Info("serving", "node", id, "grpc_addr", grpcAddr, "http_addr", httpAddr)
 
 	select {
 	case err = <-httpErr:
@@ -68,10 +60,15 @@ func Serve() error {
 	return err
 }
 
-func startGRPC(port string, r *raft.Raft) (*grpc.Server, error) {
-	listener, err := net.Listen("tcp", ":"+port)
+func port(addr string) string {
+	_, p, _ := net.SplitHostPort(addr)
+	return p
+}
+
+func startGRPC(addr string, r *raft.Raft) (*grpc.Server, error) {
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, fmt.Errorf("listen on %s: %w", port, err)
+		return nil, fmt.Errorf("listen on %s: %w", addr, err)
 	}
 
 	server := grpc.NewServer()

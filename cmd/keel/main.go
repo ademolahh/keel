@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 
@@ -8,23 +9,24 @@ import (
 )
 
 func main() {
+	cfg, err := server.LoadConfig()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "config:", err)
+		os.Exit(1)
+	}
+
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		path := "/healthz"
 		if len(os.Args) > 2 {
 			path = os.Args[2]
 		}
 
-		os.Exit(healthcheck(path))
+		os.Exit(healthcheck(cfg, path))
 	}
 
-	var level slog.Level
-	if err := level.UnmarshalText([]byte(os.Getenv("LOG_LEVEL"))); err != nil {
-		level = slog.LevelInfo
-	}
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
-	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})))
-
-	if err := server.Serve(); err != nil {
+	if err := server.Serve(cfg); err != nil {
 		slog.Error("server stopped", "err", err)
 		os.Exit(1)
 	}
