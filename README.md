@@ -76,31 +76,34 @@ Each node is configured through environment variables.
 - **Durability.** Appending to the log only writes it. A sync worker fsyncs everything written so far with the lock released, so concurrent writes share one fsync. The leader counts itself towards a majority only up to its last synced entry, and a follower replies only once its new entries are synced.
 - **Reads.** A new leader commits an empty entry for its term. A read records the commit index, confirms leadership through one heartbeat round shared with any concurrent reads, and waits until that index is applied. Reads do not write to the log.
 - **Snapshots.** Once more than `SNAPSHOT_THRESHOLD` bytes of applied log build up, the node snapshots the store and drops the entries it covers.
+- **Elections.** A follower that hears nothing from a leader for a random 500 ms to 1 s starts an election. A node that is the leader, or has heard from one in the last 500 ms, refuses vote requests with a higher term without adopting it (section 6 of the paper), so a node that falls behind cannot depose a working leader.
 
 ## Benchmark
 
-A [k6](https://k6.io) run against the leader of the five-node Compose cluster. Each iteration writes a key, reads it back and checks that the value matches, so every iteration also checks that a read sees the write before it. Each virtual user writes its own key and tags its writes with a `client_id` and `seq`, so the retry check runs on every write.
+A [k6](https://k6.io) run of [scripts/test.js](scripts/test.js) against the five-node Compose cluster. Each iteration writes a key, reads it back and checks that the value matches, so every iteration also checks that a read sees the write before it. Each virtual user writes its own key and tags its writes with a `client_id` and `seq`, so the retry check runs on every write. Each request goes to a random node, so most pass through a follower, and a `503` or connection error is retried on the next node.
 
-The arrival rate steps up from 1,000 to 2,000, 4,000, 6,000 and 8,000 iterations a second, holding each step for 20 seconds, then ramps down: 2 minutes 40 seconds in all. The run aborts if p95 latency goes over 100 ms or more than 1% of requests fail.
+```sh
+docker run --rm --network raft-network -v "$PWD/scripts:/scripts:ro" grafana/k6 run /scripts/test.js
+```
+
+The arrival rate steps up from 500 to 1,000, 1,500 and 2,000 iterations a second, holding each step for 20 seconds, then ramps down: 2 minutes 10 seconds in all. The run aborts if p95 latency goes over 100 ms or more than 1% of operations fail. Add `-e FAILOVER=1` before `/scripts/test.js` to keep going through a node being stopped.
 
 | | |
 |---|---|
-| Requests | 1,264,125 (7,900 a second) |
-| Iterations (one set and one get) | 632,062 (3,950 a second) |
+| Requests | 301,963 (2,322 a second) |
+| Iterations (one set and one get) | 150,981 (1,161 a second) |
 | Failed requests | 0 |
-| Failed checks | 0 of 1,896,186 |
-| Latency p50 / p90 / p95 / p99 | 1.25 / 1.64 / 2.04 / 6.24 ms |
-| Latency max | 149 ms |
-| Dropped iterations | 437 |
+| Latency p50 / p90 / p95 / p99 | 0.93 / 1.54 / 1.97 / 5.27 ms |
+| Latency max | 108 ms |
+| Dropped iterations | 18 |
 
-Neither threshold was crossed, so the run completed.
+Neither threshold was crossed, so the run completed. k6 needed at most 40 virtual users, so the cluster kept up at the top step.
 
 **Caveats.**
 
-- Everything ran on one machine, so there is no real network latency between nodes, and k6 competes with the nodes for CPU.
+- Everything ran on one machine, so there is no real network latency between nodes, and k6 competes with the nodes for CPU. At 8,000 iterations a second, k6 and the nodes saturated Docker Desktop's CPUs, heartbeats arrived late, and leadership changed repeatedly.
 - fsync goes to Docker Desktop's virtual disk, which may not reach the physical disk the way it would on a dedicated host. Expect higher write latency on real hardware.
-- 3,950 iterations a second is the average over the whole ramp, not the peak. k6 dropped 437 iterations that could not start on schedule.
-- Requests went straight to the leader, so requests passing through a follower were not exercised.
+- 1,161 iterations a second is the average over the whole ramp, not the peak.
 - No node failed during the run.
 
 ## Develop
