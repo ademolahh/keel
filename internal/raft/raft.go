@@ -78,18 +78,6 @@ type Raft struct {
 	proto.UnimplementedRaftServer
 }
 
-type logState struct {
-	logs              []*proto.LogEntry
-	lastIncludedIndex uint64
-	lastIncludedTerm  uint64
-	logBytes          int
-
-	syncedIndex uint64
-	logGen      uint64
-	syncCh      chan struct{}
-	synced      broadcast
-}
-
 type snapshotState struct {
 	snapshot          *proto.Snapshot
 	pendingSnapshot   *proto.Snapshot
