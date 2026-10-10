@@ -538,6 +538,31 @@ func TestAppendEntries(t *testing.T) {
 		}
 	})
 
+	t.Run("adopts a newer term and resets its timer even when it rejects the entries", func(t *testing.T) {
+		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
+		raft.currentTerm = 1
+		raft.logs = makeLogs()[:1]
+		raft.electionDeadline = time.Now().Add(-time.Second)
+
+		before := time.Now()
+		res, _ := raft.AppendEntries(context.Background(), &proto.AppendEntriesRequest{
+			Term: 3, LeaderId: 2, PrevLogIndex: 4, PrevLogTerm: 3,
+		})
+
+		if res.Success {
+			t.Fatal("append: expected a rejection for the missing entry")
+		}
+
+		if res.Term != 3 || raft.currentTerm != 3 {
+			t.Errorf("term: expected 3 in the reply and the node, got %d and %d", res.Term, raft.currentTerm)
+		}
+
+		if raft.leaderId != 2 || raft.electionDeadline.Before(before.Add(electionTimeoutMin)) {
+			t.Errorf("expected leader 2 and a fresh deadline, got leader %d deadline in %v",
+				raft.leaderId, time.Until(raft.electionDeadline))
+		}
+	})
+
 	t.Run("hints its log length when prevLogIndex is past its log", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.currentTerm = 3

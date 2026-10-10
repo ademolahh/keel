@@ -92,31 +92,29 @@ func (r *Raft) appendEntries(req *proto.AppendEntriesRequest) (*proto.AppendEntr
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	// save before the reply leaves whenever the term or log changed
-	stateDirty := false
+	// save before the reply leaves whenever the log changed
 	var logFrom uint64
 	defer func() {
-		if stateDirty {
-			r.persistState()
-		}
-
 		if logFrom != 0 {
 			r.persistLog(logFrom)
 		}
 	}()
 
-	no := &proto.AppendEntriesResponse{Term: r.currentTerm, Success: false}
-
 	if req.Term < r.currentTerm {
-		return no, 0
+		return &proto.AppendEntriesResponse{Term: r.currentTerm, Success: false}, 0
 	}
 
-	// only the leader of a term at least as new as ours sends this
+	if req.Term > r.currentTerm {
+		r.becomeFollower(req.Term, "newer term in append entries")
+	}
+
+	// only the leader of this term sends this
 	if r.leaderId != req.LeaderId {
 		r.leaderChanges++
 	}
 	r.leaderId = req.LeaderId
 	r.state = Follower
+	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 
 	prevLogIndex, prevLogTerm, entries := req.PrevLogIndex, req.PrevLogTerm, req.Entries
 	if prevLogIndex < r.lastIncludedIndex {
@@ -159,11 +157,6 @@ func (r *Raft) appendEntries(req *proto.AppendEntriesRequest) (*proto.AppendEntr
 		}
 	}
 
-	if req.Term > r.currentTerm {
-		r.becomeFollower(req.Term, "newer term in append entries")
-		r.leaderId = req.LeaderId
-	}
-
 	// if log and term is the same, then all entry store the same command
 	// if log and term is the same, the logs are identical in all preceeding entries
 
@@ -191,8 +184,6 @@ func (r *Raft) appendEntries(req *proto.AppendEntriesRequest) (*proto.AppendEntr
 			r.notifyCommit()
 		}
 	}
-
-	r.electionDeadline = time.Now().Add(randomElectionTimeout())
 
 	if lastNew > r.syncedIndex {
 		r.notifySync()
