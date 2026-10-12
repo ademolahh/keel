@@ -3,7 +3,7 @@
 A key-value store replicated with Raft, written in Go. Nodes talk to each other over gRPC and serve clients over HTTP.
 
 - Leader election, log replication and log compaction with snapshots, following the [Raft paper](https://raft.github.io/raft.pdf).
-- Linearizable reads and writes: a write returns once it is applied, and a read sees every write that returned before it.
+- Linearizable reads and writes: a write returns once it is committed, and a read sees every write that returned before it.
 - Safe retries: a write tagged with a client ID and sequence number is never applied twice.
 - Durable: the log is fsynced before a write is acknowledged, with one fsync shared by every write waiting on it.
 
@@ -28,7 +28,7 @@ curl -X POST -d '{"key":"a","value":"1"}' localhost:8081/set
 curl localhost:8081/get?key=a
 ```
 
-A `503` means the request could not be completed right now. A response that carries `Retry-After` changed nothing, so it is safe to retry after that many seconds: no leader is known, the node is not the leader, or a read could not confirm leadership with a majority. A write that was not applied within two seconds, or whose leader stepped down while it waited, comes back without `Retry-After`, because it may still apply; retry it with a `client_id` and `seq` (below) so it cannot apply twice.
+A `503` means the request could not be completed right now. A response that carries `Retry-After` changed nothing, so it is safe to retry after that many seconds: no leader is known, the node is not the leader, or a read could not confirm leadership with a majority. A write that was not committed within two seconds, or whose leader stepped down while it waited, comes back without `Retry-After`, because it may still apply; retry it with a `client_id` and `seq` (below) so it cannot apply twice.
 
 ### Retrying writes
 
@@ -90,14 +90,15 @@ The arrival rate steps up from 500 to 1,000, 1,500 and 2,000 iterations a second
 
 | | |
 |---|---|
-| Requests | 301,963 (2,322 a second) |
-| Iterations (one set and one get) | 150,981 (1,161 a second) |
+| Requests | 301,999 (2,323 a second) |
+| Iterations (one set and one get) | 150,999 (1,161 a second) |
 | Failed requests | 0 |
-| Latency p50 / p90 / p95 / p99 | 0.93 / 1.54 / 1.97 / 5.27 ms |
-| Latency max | 108 ms |
-| Dropped iterations | 18 |
+| Failed checks | 0 of 452,997 |
+| Latency p50 / p90 / p95 / p99 | 0.88 / 1.37 / 1.62 / 3.20 ms |
+| Latency max | 47 ms |
+| Dropped iterations | 0 |
 
-Neither threshold was crossed, so the run completed. k6 needed at most 40 virtual users, so the cluster kept up at the top step.
+Neither threshold was crossed, so the run completed. k6 needed at most 30 virtual users, so the cluster kept up at the top step.
 
 **Caveats.**
 

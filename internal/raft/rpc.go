@@ -190,7 +190,7 @@ func (r *Raft) appendEntries(req *proto.AppendEntriesRequest) (*proto.AppendEntr
 	if req.LeaderCommit > r.commitIndex {
 		if n := min(req.LeaderCommit, lastNew); n > r.commitIndex {
 			r.commitIndex = n
-			r.notifyCommit()
+			r.committed.notify()
 		}
 	}
 
@@ -271,7 +271,7 @@ func (r *Raft) InstallSnapshot(ctx context.Context, req *proto.InstallSnapshotRe
 	r.commitIndex = snapshot.LastIncludedIndex
 	r.snapshot = snapshot
 	r.pendingSnapshot = snapshot
-	r.notifyCommit()
+	r.committed.notify()
 
 	r.resetLog()
 

@@ -388,7 +388,12 @@ func TestAppend(t *testing.T) {
 				return false
 			}
 
-			raft.commitIndex = uint64(len(raft.logs))
+			n := uint64(len(raft.logs))
+			raft.syncedIndex = n
+			for _, p := range raft.peers {
+				raft.matchIndex[p.id] = n
+			}
+			raft.advanceCommit()
 			return true
 		})
 
@@ -482,7 +487,7 @@ func TestAppend(t *testing.T) {
 			leader.mu.Lock()
 			defer leader.mu.Unlock()
 
-			return len(leader.pending) == 1
+			return len(leader.logs) == 2
 		})
 
 		leader.AppendEntries(context.Background(), &proto.AppendEntriesRequest{Term: 5, LeaderId: 2})
@@ -504,12 +509,10 @@ func TestAppend(t *testing.T) {
 		}
 	})
 
-	t.Run("returns only after the entry is applied", func(t *testing.T) {
+	t.Run("returns only after the entry is committed", func(t *testing.T) {
 		nodes, _ := cluster(t, 3, nil)
 		r := nodes[DEFAULT_LEADER_ID].raft
-		sm := &recorder{}
 		r.mu.Lock()
-		r.stateMachine = sm
 		r.state = Leader
 		r.leaderId = r.id
 		r.initNextIndex()
@@ -521,8 +524,11 @@ func TestAppend(t *testing.T) {
 			t.Fatal("append: expected true, got false")
 		}
 
-		if got := sm.applied(); !slices.Equal(got, []string{"set a=1"}) {
-			t.Errorf("applied: expected [set a=1], got %v", got)
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		if r.commitIndex < r.lastIndex() {
+			t.Errorf("commit index: expected %d, got %d", r.lastIndex(), r.commitIndex)
 		}
 	})
 }
@@ -1096,7 +1102,7 @@ func TestApply(t *testing.T) {
 
 		raft.mu.Lock()
 		raft.commitIndex = n
-		raft.notifyCommit()
+		raft.committed.notify()
 		raft.mu.Unlock()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
@@ -1320,7 +1326,7 @@ func TestStepDown(t *testing.T) {
 			r.mu.Lock()
 			defer r.mu.Unlock()
 
-			return len(r.pending) == 1
+			return len(r.logs) == 1
 		})
 
 		start := time.Now()

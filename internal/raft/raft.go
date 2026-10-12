@@ -69,8 +69,8 @@ type Raft struct {
 	done     chan struct{}
 	mu       sync.Mutex
 
-	commitCh chan struct{}
-	applied  broadcast
+	committed broadcast
+	applied   broadcast
 
 	stateMachine StateMachine
 	persister    Persister
@@ -96,13 +96,6 @@ type leaderState struct {
 	readRound  uint64
 	ackedRound map[uint64]uint64
 	acked      broadcast
-
-	pending map[uint64]pendingAppend
-}
-
-type pendingAppend struct {
-	term uint64
-	done chan bool
 }
 
 type peer struct {
@@ -129,9 +122,7 @@ func New(id uint64, clients map[uint64]proto.RaftClient, stateMachine StateMachi
 		nextIndex:         make(map[uint64]uint64),
 		matchIndex:        make(map[uint64]uint64),
 		ackedRound:        make(map[uint64]uint64),
-		pending:           make(map[uint64]pendingAppend),
 		done:              make(chan struct{}),
-		commitCh:          make(chan struct{}, 1),
 		stateMachine:      stateMachine,
 		persister:         persister,
 		log:               slog.Default().With("node", id),
@@ -277,7 +268,7 @@ func (r *Raft) becomeFollower(term uint64, reason string) {
 		r.persistState()
 	}
 
-	r.failPending()
+	r.committed.notify()
 	r.stopReplicators()
 	r.acked.notify()
 	r.log.Info("became follower", "term", term, "reason", reason)
@@ -298,13 +289,6 @@ func (r *Raft) becomeLeader() {
 	r.persistLog(r.lastIndex())
 	r.startReplicators()
 	r.wakeReplicators()
-}
-
-func (r *Raft) failPending() {
-	for index, p := range r.pending {
-		p.done <- false
-		delete(r.pending, index)
-	}
 }
 
 func (r *Raft) startReplicators() {
@@ -334,8 +318,8 @@ func (r *Raft) stopReplicators() {
 var (
 	ErrNotLeader = errors.New("not the leader")
 	ErrNoQuorum  = errors.New("could not reach a majority")
-	ErrTimeout   = errors.New("not applied before the deadline")
-	ErrLost      = errors.New("leadership changed before the entry was applied")
+	ErrTimeout   = errors.New("not committed before the deadline")
+	ErrLost      = errors.New("leadership changed before the entry was committed")
 )
 
 func (r *Raft) Append(ctx context.Context, cmd string) error {
@@ -349,28 +333,24 @@ func (r *Raft) Append(ctx context.Context, cmd string) error {
 	r.addEntries(&proto.LogEntry{Term: term, Cmd: cmd})
 	index := r.lastIndex()
 	r.persistLog(index)
-
-	done := make(chan bool, 1)
-	r.pending[index] = pendingAppend{term: term, done: done}
 	r.wakeReplicators()
 	r.mu.Unlock()
 
-	select {
-	case ours := <-done:
-		if !ours {
-			return ErrLost
-		}
-
-		return nil
-	case <-ctx.Done():
-		r.mu.Lock()
-		if p, ok := r.pending[index]; ok && p.done == done {
-			delete(r.pending, index)
-		}
-		r.mu.Unlock()
-
+	err := r.waitUntil(ctx, &r.committed, func() bool {
+		return r.commitIndex >= index || r.currentTerm != term
+	})
+	if err != nil {
 		return ErrTimeout
 	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.currentTerm != term {
+		return ErrLost
+	}
+
+	return nil
 }
 
 func (r *Raft) Read(ctx context.Context) error {
@@ -560,15 +540,20 @@ func (r *Raft) runApplier() {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 
+	r.mu.Lock()
+	changed := r.committed.wait()
+	r.mu.Unlock()
+
 	for {
 		select {
 		case <-r.done:
 			return
-		case <-r.commitCh:
+		case <-changed:
 		case <-ticker.C:
 		}
 
 		r.mu.Lock()
+		changed = r.committed.wait()
 
 		if snapshot := r.pendingSnapshot; snapshot != nil {
 			r.pendingSnapshot = nil
@@ -603,14 +588,6 @@ func (r *Raft) runApplier() {
 		}
 
 		r.mu.Lock()
-		for i, e := range entries {
-			index := first + uint64(i)
-			if p, ok := r.pending[index]; ok {
-				p.done <- e.Term == p.term
-				delete(r.pending, index)
-			}
-		}
-
 		r.lastApplied = first + uint64(len(entries)) - 1
 		r.log.Debug("applied", "from", first, "to", r.lastApplied)
 		r.applied.notify()

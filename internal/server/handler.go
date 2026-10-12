@@ -74,14 +74,14 @@ func (h *RaftHandler) commit(w http.ResponseWriter, r *http.Request, op, key, cm
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "not the leader", http.StatusServiceUnavailable)
 	case errors.Is(err, raft.ErrTimeout):
-		http.Error(w, op+" was not applied in time and may still apply", http.StatusServiceUnavailable)
+		http.Error(w, op+" was not committed in time and may still apply", http.StatusServiceUnavailable)
 	case errors.Is(err, raft.ErrLost):
 		http.Error(w, "leadership changed, so "+op+" may or may not have applied", http.StatusServiceUnavailable)
 	default:
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
-	slog.Warn("write not applied", "op", op, "key", key, "err", err)
+	slog.Warn("write not committed", "op", op, "key", key, "err", err)
 	return false
 }
 

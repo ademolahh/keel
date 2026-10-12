@@ -160,15 +160,8 @@ func (r *Raft) advanceCommit() {
 
 	if n > r.commitIndex && r.termAt(n) == r.currentTerm {
 		r.commitIndex = n
-		r.notifyCommit()
+		r.committed.notify()
 		r.log.Debug("committed", "index", n)
-	}
-}
-
-func (r *Raft) notifyCommit() {
-	select {
-	case r.commitCh <- struct{}{}:
-	default:
 	}
 }
 
