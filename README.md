@@ -43,6 +43,7 @@ curl -X POST -d '{"key":"a","value":"1","client_id":"c1","seq":1}' localhost:808
 | Path | Returns |
 |---|---|
 | `/leader` | The leader's ID and HTTP address, or `503` while there is none. |
+| `/leader/healthz` | `200` on the leader and `503` on every other node. Point a load balancer's health check here to send traffic only to the leader. |
 | `/state` | This node's term, vote and log entries. |
 | `/healthz` | `200` while the process is serving. |
 | `/readyz` | `200` once the node knows a leader and has applied every committed entry. |

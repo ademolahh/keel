@@ -88,6 +88,19 @@ func TestWrite(t *testing.T) {
 	})
 }
 
+func TestLeaderHealthz(t *testing.T) {
+	t.Run("answers 503 on a follower", func(t *testing.T) {
+		h := followerOf(t, 2, "127.0.0.1:1")
+
+		res := httptest.NewRecorder()
+		h.LeaderHealthz(res, httptest.NewRequest(http.MethodGet, "/leader/healthz", nil))
+
+		if res.Code != http.StatusServiceUnavailable {
+			t.Errorf("status: expected 503, got %d", res.Code)
+		}
+	})
+}
+
 func followerOf(t *testing.T, leaderID uint64, leaderAddr string) *RaftHandler {
 	t.Helper()
 

@@ -152,6 +152,16 @@ func (h *RaftHandler) Healthz(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte("ok\n"))
 }
 
+func (h *RaftHandler) LeaderHealthz(w http.ResponseWriter, r *http.Request) {
+	if !h.raft.IsLeader() {
+		http.Error(w, "not the leader", http.StatusServiceUnavailable)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("ok\n"))
+}
+
 func (h *RaftHandler) Readyz(w http.ResponseWriter, r *http.Request) {
 	if _, ok := h.raft.Leader(); !ok {
 		http.Error(w, "no leader known", http.StatusServiceUnavailable)
@@ -209,6 +219,7 @@ func routes(h *RaftHandler, m *metrics.Metrics) http.Handler {
 	handle("/delete", h.LeaderOnly(h.Delete))
 	handle("/get", h.LeaderOnly(h.Get))
 	handle("/leader", h.Leader)
+	handle("/leader/healthz", h.LeaderHealthz)
 	handle("/state", h.State)
 	handle("/healthz", h.Healthz)
 	handle("/readyz", h.Readyz)
