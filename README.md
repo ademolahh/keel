@@ -1,11 +1,19 @@
 # Keel
 
+[![ci](https://github.com/ademolahh/keel/actions/workflows/ci.yml/badge.svg)](https://github.com/ademolahh/keel/actions/workflows/ci.yml)
+
 A key-value store replicated with Raft, written in Go. Nodes talk to each other over gRPC and serve clients over HTTP.
 
 - Leader election, log replication and log compaction with snapshots, following the [Raft paper](https://raft.github.io/raft.pdf).
 - Linearizable reads and writes: a write returns once it is committed, and a read sees every write that returned before it.
 - Safe retries: a write tagged with a client ID and sequence number is never applied twice.
 - Durable: the log is fsynced before a write is acknowledged, with one fsync shared by every write waiting on it.
+
+## Not implemented
+
+- **Membership changes.** The cluster is fixed by `PEERS`; nodes cannot be added or removed while it runs.
+- **TLS and auth.** Raft traffic between nodes and the HTTP API are both unencrypted and unauthenticated, so run the cluster on a private network.
+- **A client library.** Clients call the HTTP API directly and handle `503` retries themselves.
 
 ## Run
 
