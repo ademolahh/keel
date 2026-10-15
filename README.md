@@ -81,7 +81,7 @@ Each node is configured through environment variables.
 
 ## How it works
 
-![Read and write paths through the cluster](docs/architecture.png)
+![Inside a Keel node](docs/architecture.png)
 
 - **Replication.** The leader keeps one replicator per follower. Each sends one `AppendEntries` at a time carrying every entry the follower is missing, so writes that arrive together travel together. A follower that has fallen behind the leader's snapshot is sent the snapshot instead.
 - **Durability.** Appending to the log only writes it. A sync worker fsyncs everything written so far with the lock released, so concurrent writes share one fsync. The leader counts itself towards a majority only up to its last synced entry, and a follower replies only once its new entries are synced.
