@@ -88,7 +88,7 @@ Each node is configured through environment variables.
 - **Durability.** Appending to the log only writes it. A sync worker fsyncs everything written so far with the lock released, so concurrent writes share one fsync. The leader counts itself towards a majority only up to its last synced entry, and a follower replies only once its new entries are synced.
 - **Reads.** A new leader commits an empty entry for its term. A read records the commit index, confirms leadership through one heartbeat round shared with any concurrent reads, and waits until that index is applied. Reads do not write to the log.
 - **Snapshots.** Once more than `SNAPSHOT_THRESHOLD` bytes of applied log build up, the node snapshots the store and drops the entries it covers.
-- **Elections.** A follower that hears nothing from a leader for a random 500 ms to 1 s starts an election. A node that is the leader, or has heard from one in the last 500 ms, refuses vote requests with a higher term without adopting it (section 6 of the paper), so a node that falls behind cannot depose a working leader.
+- **Elections.** A follower that hears nothing from a leader for a random 100 to 300 ms starts an election. A node that is the leader, or has heard from one in the last 100 ms, refuses vote requests with a higher term without adopting it (section 6 of the paper), so a node that falls behind cannot depose a working leader.
 
 ## Benchmark
 

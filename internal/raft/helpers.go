@@ -198,7 +198,7 @@ func getMatchingTermIndex(logs []*proto.LogEntry, term uint64, prevLogIndex int)
 }
 
 const (
-	electionTimeoutMin = 150 * time.Millisecond
+	electionTimeoutMin = 100 * time.Millisecond
 	electionTimeoutMax = 300 * time.Millisecond
 )
 
