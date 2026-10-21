@@ -243,27 +243,19 @@ func (p *FilePersister) readLog() ([]*proto.LogEntry, error) {
 		pos     int64 = logHeader
 	)
 
-	for {
-		rest := data[pos:]
-		if len(rest) < recordHeader {
-			if len(rest) == 0 {
-				slog.Debug("read log", "path", p.logPath, "entries", len(logs))
-			} else {
-				slog.Warn("partial record header", "path", p.logPath, "offset", pos, "bytes", len(rest))
-			}
-			break
-		}
+	for int64(len(data))-pos >= recordHeader {
+		n := binary.LittleEndian.Uint32(data[pos:])
+		sum := binary.LittleEndian.Uint32(data[pos+4:])
 
-		n := binary.LittleEndian.Uint32(rest)
-		sum := binary.LittleEndian.Uint32(rest[4:])
-
-		if uint64(len(rest)-recordHeader) < uint64(n) {
+		start := pos + recordHeader
+		end := start + int64(n)
+		if end > int64(len(data)) {
 			slog.Warn("partial record body", "path", p.logPath, "offset", pos,
-				"want", n, "have", len(rest)-recordHeader)
+				"want", n, "have", int64(len(data))-start)
 			break
 		}
 
-		body := rest[recordHeader : recordHeader+n]
+		body := data[start:end]
 		if crc32.Checksum(body, castagnoli) != sum {
 			slog.Warn("record checksum mismatch", "path", p.logPath, "offset", pos)
 			break
@@ -277,8 +269,10 @@ func (p *FilePersister) readLog() ([]*proto.LogEntry, error) {
 
 		logs = append(logs, &e)
 		offsets = append(offsets, pos)
-		pos += recordHeader + int64(n)
+		pos = end
 	}
+
+	slog.Debug("read log", "path", p.logPath, "entries", len(logs))
 
 	if pos < int64(len(data)) {
 		slog.Warn("dropping partial log record", "path", p.logPath, "bytes", int64(len(data))-pos)
