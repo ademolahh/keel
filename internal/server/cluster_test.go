@@ -111,12 +111,17 @@ func TestCluster(t *testing.T) {
 
 	t.Run("state and metrics are served", func(t *testing.T) {
 		var state struct {
-			Term uint64 `json:"term"`
+			Term    uint64 `json:"term"`
+			LogSize *int   `json:"log_size"`
 		}
 		decode(t, get(t, leader, "/state"), &state)
 
 		if state.Term == 0 {
 			t.Error("state: expected a term above 0")
+		}
+
+		if state.LogSize == nil || *state.LogSize == 0 {
+			t.Errorf("state: expected a log size above 0, got %v", state.LogSize)
 		}
 
 		res := get(t, leader, "/metrics")

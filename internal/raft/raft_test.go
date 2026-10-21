@@ -1630,7 +1630,7 @@ func TestBroadcast(t *testing.T) {
 }
 
 func TestStatus(t *testing.T) {
-	t.Run("returns copies the caller cannot change the node through", func(t *testing.T) {
+	t.Run("returns a copy the caller cannot change the node through", func(t *testing.T) {
 		raft, _ := newRaft(t, 1, DEFAULT_CLUSTER_SIZE)
 		raft.currentTerm = 3
 		raft.votedFor = uint64Ptr(2)
@@ -1646,19 +1646,14 @@ func TestStatus(t *testing.T) {
 			t.Errorf("voted for: expected 2, got %v", s.VotedFor)
 		}
 
-		if len(s.Logs) != 5 {
-			t.Errorf("log size: expected 5, got %d", len(s.Logs))
+		if s.LogSize != 5 {
+			t.Errorf("log size: expected 5, got %d", s.LogSize)
 		}
 
 		*s.VotedFor = 4
-		s.Logs[0] = &proto.LogEntry{Term: 9}
 
 		if *raft.votedFor != 2 {
 			t.Errorf("node's vote: expected 2, got %d", *raft.votedFor)
-		}
-
-		if raft.logs[0].Term != 1 {
-			t.Errorf("node's first entry term: expected 1, got %d", raft.logs[0].Term)
 		}
 	})
 

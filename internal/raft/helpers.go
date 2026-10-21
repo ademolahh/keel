@@ -14,7 +14,7 @@ import (
 type Status struct {
 	Term     uint64
 	VotedFor *uint64
-	Logs     []*proto.LogEntry
+	LogSize  int
 }
 
 type Stats struct {
@@ -47,8 +47,8 @@ func (r *Raft) Status() Status {
 	defer r.mu.Unlock()
 
 	s := Status{
-		Term: r.currentTerm,
-		Logs: slices.Clone(r.logs),
+		Term:    r.currentTerm,
+		LogSize: len(r.logs),
 	}
 
 	if r.votedFor != nil {

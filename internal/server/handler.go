@@ -130,22 +130,12 @@ func (h *RaftHandler) Leader(w http.ResponseWriter, r *http.Request) {
 func (h *RaftHandler) State(w http.ResponseWriter, r *http.Request) {
 	s := h.raft.Status()
 
-	type entry struct {
-		Term uint64 `json:"term"`
-		Cmd  string `json:"cmd"`
-	}
-
-	logs := make([]entry, len(s.Logs))
-	for i, l := range s.Logs {
-		logs[i] = entry{Term: l.Term, Cmd: l.Cmd}
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(struct {
 		Term     uint64  `json:"term"`
 		VotedFor *uint64 `json:"voted_for"`
-		Logs     []entry `json:"logs"`
-	}{s.Term, s.VotedFor, logs})
+		LogSize  int     `json:"log_size"`
+	}{s.Term, s.VotedFor, s.LogSize})
 }
 
 func (h *RaftHandler) Healthz(w http.ResponseWriter, r *http.Request) {

@@ -55,7 +55,7 @@ These are all `GET`. A request with any other method, here or in the API above, 
 |---|---|
 | `/leader` | The leader's ID and HTTP address, or `503` while there is none. |
 | `/leader/healthz` | `200` on the leader and `503` on every other node. Point a load balancer's health check here to send traffic only to the leader. |
-| `/state` | This node's term, vote and log entries. |
+| `/state` | This node's term, vote and the number of entries in its log. |
 | `/healthz` | `200` while the process is serving. |
 | `/readyz` | `200` once the node knows a leader and has applied every committed entry. |
 | `/metrics` | Prometheus metrics, including `raft_term`, `raft_state`, `raft_commit_index`, `raft_leader_changes_total`, `raft_persist_duration_seconds` and HTTP and gRPC request metrics. |
