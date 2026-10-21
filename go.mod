@@ -3,6 +3,7 @@ module github.com/ademolahh/keel
 go 1.27.2
 
 require (
+	github.com/anishathalye/porcupine v1.3.1
 	github.com/prometheus/client_golang v1.24.1
 	github.com/prometheus/client_model v0.6.2
 	google.golang.org/grpc v1.83.2
