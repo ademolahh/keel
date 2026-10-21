@@ -211,19 +211,19 @@ func (h *RaftHandler) LeaderOnly(next http.HandlerFunc) http.HandlerFunc {
 func routes(h *RaftHandler, m *metrics.Metrics) http.Handler {
 	mux := http.NewServeMux()
 
-	handle := func(route string, handler http.HandlerFunc) {
-		mux.Handle(route, m.Instrument(route, handler))
+	handle := func(method, route string, handler http.HandlerFunc) {
+		mux.Handle(method+" "+route, m.Instrument(route, handler))
 	}
 
-	handle("/set", h.LeaderOnly(h.Set))
-	handle("/delete", h.LeaderOnly(h.Delete))
-	handle("/get", h.LeaderOnly(h.Get))
-	handle("/leader", h.Leader)
-	handle("/leader/healthz", h.LeaderHealthz)
-	handle("/state", h.State)
-	handle("/healthz", h.Healthz)
-	handle("/readyz", h.Readyz)
-	mux.Handle("/metrics", m.Handler())
+	handle(http.MethodPost, "/set", h.LeaderOnly(h.Set))
+	handle(http.MethodPost, "/delete", h.LeaderOnly(h.Delete))
+	handle(http.MethodGet, "/get", h.LeaderOnly(h.Get))
+	handle(http.MethodGet, "/leader", h.Leader)
+	handle(http.MethodGet, "/leader/healthz", h.LeaderHealthz)
+	handle(http.MethodGet, "/state", h.State)
+	handle(http.MethodGet, "/healthz", h.Healthz)
+	handle(http.MethodGet, "/readyz", h.Readyz)
+	mux.Handle("GET /metrics", m.Handler())
 
 	return mux
 }

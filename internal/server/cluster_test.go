@@ -57,6 +57,16 @@ func TestCluster(t *testing.T) {
 		}
 	})
 
+	t.Run("a request with the wrong method is rejected", func(t *testing.T) {
+		if res := get(t, leader, "/set"); res.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("GET /set: expected 405, got %d", res.StatusCode)
+		}
+
+		if res := post(t, leader, "/get?key=a", ""); res.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("POST /get: expected 405, got %d", res.StatusCode)
+		}
+	})
+
 	t.Run("a get without a key is rejected", func(t *testing.T) {
 		if res := get(t, leader, "/get"); res.StatusCode != http.StatusBadRequest {
 			t.Errorf("get: expected 400, got %d", res.StatusCode)

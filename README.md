@@ -49,6 +49,8 @@ curl -X POST -d '{"key":"a","value":"1","client_id":"c1","seq":1}' localhost:808
 
 ### Operations
 
+These are all `GET`. A request with any other method, here or in the API above, gets `405`.
+
 | Path | Returns |
 |---|---|
 | `/leader` | The leader's ID and HTTP address, or `503` while there is none. |
