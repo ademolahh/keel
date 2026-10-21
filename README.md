@@ -130,19 +130,19 @@ docker compose up -d --build
 
 | | |
 |---|---|
-| Iterations (one set and one get) | 149,554 (1,150 a second) |
-| Failed checks | 0 of 448,662 |
-| Failed operations, after retries | 0 of 299,108 |
-| Requests that failed and were retried | 20,157 of 319,266 (6.3%) |
-| Operation latency p50 / p95 / p99 | 1 / 102 / 105 ms |
-| Operation latency max | 3.68 s |
-| Dropped iterations | 1,446 |
+| Iterations (one set and one get) | 150,776 (1,160 a second) |
+| Failed checks | 0 of 452,328 |
+| Failed operations, after retries | 0 of 301,552 |
+| Requests that failed and were retried | 17,575 of 319,128 (5.5%) |
+| Operation latency p50 / p95 / p99 | 1 / 102 / 104 ms |
+| Operation latency max | 3.4 s |
+| Dropped iterations | 223 |
 
-- A new leader was elected 213 ms after the kill, going by the node logs and the time Docker recorded for the kill.
-- The killed node caught up 172 ms after it started again, by installing the leader's snapshot.
+- A new leader was elected 201 ms after the kill, going by the node logs and the time Docker recorded for the kill.
+- The killed node caught up 278 ms after it started again, by installing the leader's snapshot.
 - While it was down, the requests sent to it failed at once and were retried on the next node after 100 ms, which is where most of the failed requests and the 100 ms p95 and p99 come from.
-- A request a follower had already forwarded to the leader when it died hung until k6 gave up after 3 seconds, because forwarding has no timeout of its own. That is the 3.68 s maximum.
-- Apart from the kill, the leader changed four more times: three times within two seconds before it and once after the restart. Each time, followers went more than 100 ms without a heartbeat under load, and 486 writes were cut off by the change and retried. The same run with a 150 ms minimum timeout had no elections besides the kill.
+- A request a follower had already forwarded to the leader when it died hung until k6 gave up after 3 seconds, because forwarding has no timeout of its own. That is the 3.4 s maximum.
+- The kill was the only leader change during the run. With a 100 ms minimum election timeout, the same run changed leader four more times, because followers went more than 100 ms without a heartbeat under load, and 486 writes were cut off and retried. That is why the minimum is 150 ms.
 
 ## Develop
 
