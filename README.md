@@ -6,6 +6,7 @@ A key-value store replicated with Raft, written in Go. Nodes talk to each other 
 
 - Leader election, log replication and log compaction with snapshots, following the [Raft paper](https://raft.github.io/raft.pdf).
 - Linearizable reads and writes: a write returns once it is committed, and a read sees every write that returned before it.
+  - Checked with [Porcupine](https://github.com/anishathalye/porcupine): [a test](internal/server/linearizability_test.go) records concurrent clients against a three-node cluster, including while its leader is stopped, and verifies that the history is linearizable.
 - Safe retries: a write tagged with a client ID and sequence number is never applied twice.
 - Durable: the log is fsynced before a write is acknowledged, with one fsync shared by every write waiting on it.
 
