@@ -98,7 +98,7 @@ A [k6](https://k6.io) run of [scripts/test.js](scripts/test.js) against the five
 docker run --rm --network raft-network -v "$PWD/scripts:/scripts:ro" grafana/k6 run /scripts/test.js
 ```
 
-The arrival rate steps up from 500 to 1,000, 1,500 and 2,000 iterations a second, holding each step for 20 seconds, then ramps down: 2 minutes 10 seconds in all. The run aborts if p95 latency goes over 100 ms or more than 1% of operations fail. Add `-e FAILOVER=1` before `/scripts/test.js` to keep going through a node being stopped.
+The arrival rate steps up from 500 to 1,000, 1,500 and 2,000 iterations a second, holding each step for 20 seconds, then ramps down: 2 minutes 10 seconds in all. The run aborts if p95 latency goes over 100 ms or more than 1% of operations fail.
 
 | | |
 |---|---|
@@ -117,7 +117,32 @@ Neither threshold was crossed, so the run completed. k6 needed at most 30 virtua
 - Everything ran on one machine, so there is no real network latency between nodes, and k6 competes with the nodes for CPU. At 8,000 iterations a second, k6 and the nodes saturated Docker Desktop's CPUs, heartbeats arrived late, and leadership changed repeatedly.
 - fsync goes to Docker Desktop's virtual disk, which may not reach the physical disk the way it would on a dedicated host. Expect higher write latency on real hardware.
 - 1,161 iterations a second is the average over the whole ramp, not the peak.
-- No node failed during the run.
+- No node failed during the run. The next run kills one.
+
+### Failover
+
+The same run with the leader killed with `SIGKILL` 60 seconds in, during the 1,000 iterations a second step, and started again 30 seconds later. [scripts/failover.sh](scripts/failover.sh) does the kill and restart and writes the k6 summary, a timeline and every node's log to `results/failover`. It runs k6 with `-e FAILOVER=1`, which keeps the run going through failed requests, and `--dns ttl=1s`, so k6 notices the dead node instead of caching its address for five minutes.
+
+```sh
+docker compose up -d --build
+./scripts/failover.sh
+```
+
+| | |
+|---|---|
+| Iterations (one set and one get) | 149,554 (1,150 a second) |
+| Failed checks | 0 of 448,662 |
+| Failed operations, after retries | 0 of 299,108 |
+| Requests that failed and were retried | 20,157 of 319,266 (6.3%) |
+| Operation latency p50 / p95 / p99 | 1 / 102 / 105 ms |
+| Operation latency max | 3.68 s |
+| Dropped iterations | 1,446 |
+
+- A new leader was elected 213 ms after the kill, going by the node logs and the time Docker recorded for the kill.
+- The killed node caught up 172 ms after it started again, by installing the leader's snapshot.
+- While it was down, the requests sent to it failed at once and were retried on the next node after 100 ms, which is where most of the failed requests and the 100 ms p95 and p99 come from.
+- A request a follower had already forwarded to the leader when it died hung until k6 gave up after 3 seconds, because forwarding has no timeout of its own. That is the 3.68 s maximum.
+- Apart from the kill, the leader changed four more times: three times within two seconds before it and once after the restart. Each time, followers went more than 100 ms without a heartbeat under load, and 486 writes were cut off by the change and retried. The same run with a 150 ms minimum timeout had no elections besides the kill.
 
 ## Develop
 
