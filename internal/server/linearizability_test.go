@@ -64,15 +64,20 @@ type kvValue struct {
 
 var kvModel = porcupine.Model{
 	Partition: func(history []porcupine.Operation) [][]porcupine.Operation {
-		byKey := map[string][]porcupine.Operation{}
+		index := make(map[string]int)
+
+		var parts [][]porcupine.Operation
 		for _, op := range history {
 			key := op.Input.(kvInput).key
-			byKey[key] = append(byKey[key], op)
-		}
+			i, ok := index[key]
 
-		parts := make([][]porcupine.Operation, 0, len(byKey))
-		for _, ops := range byKey {
-			parts = append(parts, ops)
+			if !ok {
+				i = len(parts)
+				index[key] = i
+				parts = append(parts, nil)
+			}
+
+			parts[i] = append(parts[i], op)
 		}
 
 		return parts
